@@ -1,0 +1,10 @@
+{
+  "name": "Nouqta — Académie d'écriture et de lecture arabe",
+  "short_name": "Nouqta",
+  "description": "Académie mobile-first d'alphabet, de lecture et d'écriture arabe pour enfants et adultes.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#EEF3F0",
+  "theme_color": "#0B6B5D",
+  "lang": "fr"
+}

@@ -1,0 +1,230 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *, .dark, .dark *));
+
+:root {
+  --brand: #0B6B5D;       /* zellige green, dominant */
+  --brand-deep: #07463D;
+  --ink: #0A1F1B;         /* text and ink strokes */
+  --paper: #EEF3F0;       /* app background, cool mist */
+  --surface: #FFFFFF;
+  --accent: #FFB400;      /* saffron: the ONE primary action color */
+  --accent-ink: #3A2600;  /* text on accent */
+  --good: #1FB57A;        /* correct, mastered */
+  --bad: #FF5A4E;         /* outside the guide, wrong */
+  --locked: #B8C4BF;
+  --line: #C5D1CC;
+  --radius-lg: 28px;
+  --radius-md: 18px;
+  --radius-sm: 12px;
+
+  --font-display: 'Gloock', Georgia, serif;
+  --font-sans: 'Figtree', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: 'DM Mono', monospace;
+  --font-arabic: 'Amiri', 'Noto Naskh Arabic', serif;
+}
+
+[data-theme="dark"],
+.dark {
+  --paper: #08201C;
+  --surface: #0E2F29;
+  --ink: #F2FAF7;
+  --line: #1F4A42;
+}
+
+@layer base {
+  * {
+    box-sizing: border-box;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  html,
+  body {
+    background-color: var(--paper);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    font-size: 17px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    margin: 0;
+    padding: 0;
+    overflow-x: hidden;
+    transition: background-color 180ms ease-out, color 180ms ease-out;
+  }
+
+  h1,
+  h2,
+  h3,
+  .font-display {
+    font-family: var(--font-display);
+    font-weight: 400;
+    letter-spacing: -0.01em;
+    line-height: 1.15;
+  }
+}
+
+.font-arabic {
+  font-family: var(--font-arabic);
+  line-height: 1.95;
+  font-feature-settings: "kern" 1, "liga" 1, "calt" 1;
+}
+
+.font-mono-tag {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-variant-numeric: tabular-nums;
+}
+
+p {
+  max-width: 36ch;
+}
+
+@media (min-width: 768px) {
+  p {
+    max-width: 65ch;
+  }
+}
+
+.hero-shadow {
+  box-shadow: 0 12px 32px rgba(7, 70, 61, 0.14);
+}
+
+.pressable {
+  transition: transform 80ms ease-out, opacity 120ms ease-out;
+}
+.pressable:active {
+  transform: scale(0.97);
+}
+
+@keyframes shakeGentle {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-5px); }
+  75% { transform: translateX(5px); }
+}
+
+.animate-shake {
+  animation: shakeGentle 240ms ease-out;
+}
+
+@keyframes pulseOnce {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.06); }
+  100% { transform: scale(1); }
+}
+
+.animate-pulse-once {
+  animation: pulseOnce 420ms ease-out 1;
+}
+
+@keyframes slideUpSheet {
+  from {
+    opacity: 0;
+    transform: translateY(24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-sheet {
+  animation: slideUpSheet 200ms ease-out;
+}
+
+@keyframes slideStepIn {
+  from {
+    opacity: 0;
+    transform: translateX(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.animate-step {
+  animation: slideStepIn 180ms ease-out;
+}
+
+@keyframes wiggleAnt {
+  0%, 100% { transform: rotate(0deg) scale(1); }
+  25% { transform: rotate(-10deg) scale(1.08); }
+  75% { transform: rotate(10deg) scale(1.08); }
+}
+
+.animate-wiggle {
+  animation: wiggleAnt 320ms ease-out 1;
+}
+
+/* Phase D: 6 legs in two alternating groups, switching every 120 ms (240ms period with steps(2, end)) ONLY while moving */
+@keyframes antLegSwingA {
+  0% { transform: rotate(-16deg); }
+  100% { transform: rotate(16deg); }
+}
+
+@keyframes antLegSwingB {
+  0% { transform: rotate(16deg); }
+  100% { transform: rotate(-16deg); }
+}
+
+@keyframes antAntennaWiggle {
+  0%, 100% { transform: rotate(-6deg); }
+  50% { transform: rotate(6deg); }
+}
+
+@keyframes antIdleLook {
+  0%, 100% { transform: translateY(0px) rotate(0deg); }
+  50% { transform: translateY(-2px) rotate(3deg); }
+}
+
+.ant-leg-group-a,
+.ant-leg-group-b,
+.ant-antennae {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: none;
+}
+
+[data-moving="true"] .ant-leg-group-a {
+  animation: antLegSwingA 240ms steps(2, end) infinite;
+}
+
+[data-moving="true"] .ant-leg-group-b {
+  animation: antLegSwingB 240ms steps(2, end) infinite;
+}
+
+[data-moving="true"] .ant-antennae {
+  animation: antAntennaWiggle 240ms steps(2, end) infinite;
+}
+
+.ant-idle-node {
+  animation: antIdleLook 2200ms ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-shake,
+  .animate-pulse-once,
+  .animate-sheet,
+  .animate-step,
+  .animate-wiggle,
+  .ant-idle-node,
+  .pressable:active {
+    animation: none !important;
+    transform: none !important;
+    transition: opacity 150ms ease-out !important;
+  }
+}
+
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 9999px;
+}

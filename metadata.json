@@ -1,0 +1,6 @@
+{
+  "name": "AlifBee Académie — Apprendre l'Arabe & Coaching",
+  "description": "Plateforme interactive d'apprentissage de la langue arabe (alphabet, voyelles harakât, écriture, lecture vocalisée, quiz) avec suivi enseignant et correction personnalisée Premium.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
