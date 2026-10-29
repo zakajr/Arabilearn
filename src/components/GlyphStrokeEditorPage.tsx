@@ -1031,9 +1031,8 @@ export const GlyphStrokeEditorPage: React.FC<GlyphStrokeEditorPageProps> = ({
 
               {/* Calligraphy Ant for Real Animation Preview */}
               <CalligraphyAntSvgGroup
-                groupRef={antGroupRef}
+                ref={antGroupRef}
                 mode="kids"
-                dotRectSide={dotSide}
               />
             </svg>
           </div>

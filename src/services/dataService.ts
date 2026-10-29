@@ -901,23 +901,18 @@ export function isFamilyUnlockedForUser(
 ): boolean {
   if (familyId === 'F1') return true;
   const user = state.users.find((u) => u.id === userId);
-  if (!user) return false;
-  if (user.entitlement !== 'full') return false;
-
+  if (!user || user.entitlement !== 'full') return false;
   const famIndex = LETTER_FAMILIES.findIndex((f) => f.id === familyId);
   if (famIndex <= 0) return true;
-  const prevFamily = LETTER_FAMILIES[famIndex - 1];
-  const passedExams = state.passedFamilyExams[userId] || [];
-  if (passedExams.includes(prevFamily.id)) return true;
-
-  const allPrevLettersDone = prevFamily.letters.every((lid) => {
-    const prog = state.progress.find(
-      (p) => p.userId === userId && p.letterId === lid
+  const prev = LETTER_FAMILIES[famIndex - 1];
+  const passed = (state.passedFamilyExams[userId] || []).includes(prev.id);
+  if (passed) return true;
+  return prev.letters.every((lid) => {
+    const p = state.progress.find(
+      (x) => x.userId === userId && x.letterId === lid
     );
-    return prog && prog.stepsDone.length === 5;
+    return Boolean(p && p.stepsDone.length === 5);
   });
-
-  return allPrevLettersDone || user.entitlement === 'full';
 }
 
 export function isLetterUnlockedForUser(
@@ -947,7 +942,8 @@ export function isLetterUnlockedForUser(
 }
 
 /**
- * Returns the list of letter IDs that the learner has unlocked or completed (for Section 6.4 progressive vocabulary filtering).
+ * Returns the list of letter IDs that are unlocked in the letter list/padlocks (includes the next letter not yet started).
+ * Keep getUnlockedLetterIdsForUser ONLY for the letter list and padlocks (FIX 1b).
  */
 export function getUnlockedLetterIdsForUser(
   state: BlueprintState,
@@ -957,6 +953,31 @@ export function getUnlockedLetterIdsForUser(
     isLetterUnlockedForUser(state, userId, l.id)
   ).map((l) => l.id);
 }
+
+/**
+ * FIX 1b: Returns letters whose progress has at least 2 steps done (Voir + Ecouter) or 5 steps.
+ * Used for every game generator, quiz, exam, and the Lecture word filter.
+ */
+export function getLearnedLetterIdsForUser(
+  state: BlueprintState,
+  userId: string
+): string[] {
+  return LETTERS_DATA.filter((l) => {
+    if (!isLetterUnlockedForUser(state, userId, l.id)) return false;
+    const p = state.progress.find(
+      (x) => x.userId === userId && x.letterId === l.id
+    );
+    if (!p) return false;
+    const hasVoirAndEcouter =
+      p.stepsDone.includes('voir') && p.stepsDone.includes('ecouter');
+    return (
+      hasVoirAndEcouter ||
+      p.stepsDone.length >= 2 ||
+      p.stepsDone.length === 5
+    );
+  }).map((l) => l.id);
+}
+
 
 /**
  * Returns the current active "Today" letter for the learner on Parcours.

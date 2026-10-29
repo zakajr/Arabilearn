@@ -1362,93 +1362,93 @@ export const CalligraphyAntSvgGroup = React.forwardRef<
       {/* Invisible 48x48 tap target centered on the ant */}
       <circle cx="0" cy="0" r="24" fill="transparent" />
 
-      <g className="ant-body-inner" transform={`scale(${scale})`}>
-        {/* Leg Group A (3 alternating legs: front-top, mid-bottom, back-top) */}
-        <g className="ant-leg-group-a" data-testid="ant-legs-a">
-          <path
-            d="M 4 -4 L 9 -13 M -2 4 L -3 13 M -9 -4 L -15 -12"
+      <g transform={`scale(${scale})`}>
+        <g className="ant-body-inner">
+          {/* Leg Group A (3 alternating legs: front-top, mid-bottom, back-top) */}
+          <g className="ant-leg-group-a" data-testid="ant-legs-a">
+            <path
+              d="M 4 -4 L 9 -13 M -2 4 L -3 13 M -9 -4 L -15 -12"
+              stroke="#0A1F1B"
+              strokeWidth="2.1"
+              strokeLinecap="round"
+            />
+          </g>
+
+          {/* Leg Group B (3 alternating legs: front-bottom, mid-top, back-bottom) */}
+          <g className="ant-leg-group-b" data-testid="ant-legs-b">
+            <path
+              d="M 4 4 L 9 13 M -2 -4 L -3 -13 M -9 4 L -15 12"
+              stroke="#0A1F1B"
+              strokeWidth="2.1"
+              strokeLinecap="round"
+            />
+          </g>
+
+          {/* Abdomen (at -X behind the ant, where the ink trail emerges) */}
+          <ellipse
+            cx="-13"
+            cy="0"
+            rx="7.5"
+            ry="5.5"
+            fill="#07463D"
             stroke="#0A1F1B"
-            strokeWidth="2.1"
-            strokeLinecap="round"
+            strokeWidth="1.6"
           />
-        </g>
+          <circle cx="-13" cy="0" r="2.3" fill="#FFB400" />
 
-        {/* Leg Group B (3 alternating legs: front-bottom, mid-top, back-bottom) */}
-        <g className="ant-leg-group-b" data-testid="ant-legs-b">
-          <path
-            d="M 4 4 L 9 13 M -2 -4 L -3 -13 M -9 4 L -15 12"
+          {/* Thorax (center) */}
+          <ellipse
+            cx="-2"
+            cy="0"
+            rx="5.2"
+            ry="4"
+            fill="#0B6B5D"
             stroke="#0A1F1B"
-            strokeWidth="2.1"
-            strokeLinecap="round"
+            strokeWidth="1.6"
           />
-        </g>
 
-        {/* Abdomen (at -X behind the ant, where the ink trail emerges) */}
-        <ellipse
-          cx="-13"
-          cy="0"
-          rx="7.5"
-          ry="5.5"
-          fill="#07463D"
-          stroke="#0A1F1B"
-          strokeWidth="1.6"
-        />
-        <circle cx="-13" cy="0" r="2.3" fill="#FFB400" />
-
-        {/* Thorax (center) */}
-        <ellipse
-          cx="-2"
-          cy="0"
-          rx="5.2"
-          ry="4"
-          fill="#0B6B5D"
-          stroke="#0A1F1B"
-          strokeWidth="1.6"
-        />
-
-        {/* Head (at +X leading the stroke) */}
-        <circle
-          cx="8.5"
-          cy="0"
-          r="6.2"
-          fill="#FFB400"
-          stroke="#0A1F1B"
-          strokeWidth="1.6"
-        />
-        {mode === 'kids' && (
-          <>
-            <circle cx="10.2" cy="-2.2" r="1.2" fill="#0A1F1B" />
-            <circle cx="10.2" cy="2.2" r="1.2" fill="#0A1F1B" />
-          </>
-        )}
-
-        {/* Antennae */}
-        <g className="ant-antennae">
-          <path
-            d="M 13 -3 Q 18 -8 21 -5 M 13 3 Q 18 8 21 5"
-            stroke="#0A1F1B"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            fill="none"
-          />
-        </g>
-
-        {/* Carried diamond dot crumb (shown when ant carries a dot from the side in Phase C) */}
-        <g
-          className="ant-carried-crumb"
-          style={{ display: 'none' }}
-          transform="translate(19, 0) rotate(45)"
-        >
-          <rect
-            x="-4.8"
-            y="-4.8"
-            width="9.6"
-            height="9.6"
-            rx="1.4"
+          {/* Head (at +X leading the stroke) */}
+          <circle
+            cx="8.5"
+            cy="0"
+            r="6.2"
             fill="#FFB400"
-            stroke="#07463D"
-            strokeWidth="1.5"
+            stroke="#0A1F1B"
+            strokeWidth="1.6"
           />
+          {mode === 'kids' && (
+            <>
+              <circle cx="10.2" cy="-2.2" r="1.2" fill="#0A1F1B" />
+              <circle cx="10.2" cy="2.2" r="1.2" fill="#0A1F1B" />
+            </>
+          )}
+
+          {/* Antennae */}
+          <g className="ant-antennae">
+            <path
+              d="M 13 -3 Q 18 -8 21 -5 M 13 3 Q 18 8 21 5"
+              stroke="#0A1F1B"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              fill="none"
+            />
+          </g>
+
+          {/* Carried diamond dot crumb (shown when ant carries a dot from the side in Phase C) */}
+          <g transform="translate(19, 0) rotate(45)">
+            <g className="ant-carried-crumb" style={{ display: 'none' }}>
+              <rect
+                x="-4.8"
+                y="-4.8"
+                width="9.6"
+                height="9.6"
+                rx="1.4"
+                fill="#FFB400"
+                stroke="#07463D"
+                strokeWidth="1.5"
+              />
+            </g>
+          </g>
         </g>
       </g>
     </g>

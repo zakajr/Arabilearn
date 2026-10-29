@@ -88,29 +88,32 @@ export interface TraceValidationResult {
 
 export type TracingSubStep =
   | {
+      id: string;
       stepIndex: number;
       totalSteps: number;
       kind: 'body';
       bodyStrokeIndex: number;
       totalBodyStrokes: number;
-      labelFr: string; // e.g. "Trait 1/2", "Trait 2/2"
+      labelFr: string; // "Trait" (or "Trait 1", "Trait 2")
       stroke: GlyphBodyStroke;
     }
   | {
+      id: string;
       stepIndex: number;
       totalSteps: number;
-      kind: 'dots';
-      labelFr: string; // "Points"
-      dots: GlyphDotStroke[];
-      dotStrokes: GlyphDotStroke[];
-      expectedCount: number;
+      kind: 'dot';
+      dotIndex: number;
+      totalDots: number;
+      labelFr: string; // "Point 1", "Point 2", "Point 3"
+      dot: GlyphDotStroke;
       position: 'above' | 'below' | 'inside' | 'none';
     };
 
 /**
- * Builds the data-driven sequence of tracing steps for a GlyphForm (Section B1 & B2):
- * Body stroke(s) first ("Trait 1/N", "Trait 2/N"), then a DOTS step ("Points") if dots > 0.
- * Total steps = bodyStrokes.length + (dots > 0 ? 1 : 0).
+ * FIX B:
+ * One sub-step per body stroke (kind 'body'), then ONE sub-step PER DOT (kind 'dot' with dotIndex and the dot data).
+ * Example: a letter with a body stroke and two dots has 3 steps: 1 = Trait, 2 = Point 1, 3 = Point 2.
+ * Alif has 1 step. Baa has 2. Taa has 3. Thaa has 4. Qaaf has 3. Yaa has 3. Kaaf has 2.
  */
 export function buildTracingSubSteps(glyph: GlyphForm): TracingSubStep[] {
   const bodyStrokes = glyph.strokes.filter(
@@ -119,31 +122,32 @@ export function buildTracingSubSteps(glyph: GlyphForm): TracingSubStep[] {
   const dotStrokes = glyph.strokes.filter(
     (s): s is GlyphDotStroke => s.kind === 'dot'
   );
-  const hasDots = glyph.dotRule.count > 0 && dotStrokes.length > 0;
-  const totalSteps = bodyStrokes.length + (hasDots ? 1 : 0);
+  const totalSteps = bodyStrokes.length + dotStrokes.length;
 
   const steps: TracingSubStep[] = bodyStrokes.map((stroke, idx) => ({
+    id: `body_${idx}`,
     stepIndex: idx,
     totalSteps,
     kind: 'body',
     bodyStrokeIndex: idx,
     totalBodyStrokes: bodyStrokes.length,
-    labelFr: `Trait ${idx + 1}/${totalSteps}`,
+    labelFr: bodyStrokes.length === 1 ? 'Trait' : `Trait ${idx + 1}`,
     stroke
   }));
 
-  if (hasDots) {
+  dotStrokes.forEach((dot, dIdx) => {
     steps.push({
-      stepIndex: bodyStrokes.length,
+      id: `dot_${dIdx}`,
+      stepIndex: bodyStrokes.length + dIdx,
       totalSteps,
-      kind: 'dots',
-      labelFr: 'Points',
-      dots: dotStrokes,
-      dotStrokes,
-      expectedCount: glyph.dotRule.count,
+      kind: 'dot',
+      dotIndex: dIdx,
+      totalDots: dotStrokes.length,
+      labelFr: `Point ${dIdx + 1}`,
+      dot,
       position: glyph.dotRule.position
     });
-  }
+  });
 
   return steps;
 }
@@ -367,13 +371,121 @@ export interface TimelineEvaluation {
   }>;
 }
 
+export interface FinalAntParkingSpot {
+  x: number;
+  y: number;
+  angleDeg: number;
+  bbox: { minX: number; maxX: number; minY: number; maxY: number };
+  minClearance: number;
+  side: 'left' | 'right';
+  isOnBaseline: boolean;
+  isOutsideLetter: boolean;
+}
+
 /**
- * Phase A, C, D:
+ * FIX E:
+ * Computes the glyph bounding box from sampled points of all body strokes (40 samples each)
+ * and the baseline y (glyph.baseline).
+ * Final ant position: standing ON the baseline, outside the letter, at
+ * x = bbox.minX - 24 (if that is >= 20), otherwise bbox.maxX + 24;
+ * body angle facing the letter. At least 18 units of clearance from every stroke and every dot.
+ */
+export function computeGlyphFinalAntParkingSpot(
+  glyph: GlyphForm
+): FinalAntParkingSpot {
+  const bodyStrokes = glyph.strokes.filter(
+    (s): s is GlyphBodyStroke => s.kind === 'body'
+  );
+  const dotStrokes = glyph.strokes.filter(
+    (s): s is GlyphDotStroke => s.kind === 'dot'
+  );
+
+  const bodySamples: Point2D[] = [];
+  for (const s of bodyStrokes) {
+    bodySamples.push(...sampleSvgPathEqualLength(s.d, 40));
+  }
+
+  if (bodySamples.length === 0) {
+    return {
+      x: 40,
+      y: glyph.baseline,
+      angleDeg: 0,
+      bbox: { minX: 64, maxX: 136, minY: 60, maxY: 140 },
+      minClearance: 24,
+      side: 'left',
+      isOnBaseline: true,
+      isOutsideLetter: true
+    };
+  }
+
+  const minX = Math.min(...bodySamples.map((p) => p.x));
+  const maxX = Math.max(...bodySamples.map((p) => p.x));
+  const minY = Math.min(...bodySamples.map((p) => p.y));
+  const maxY = Math.max(...bodySamples.map((p) => p.y));
+  const y = glyph.baseline;
+
+  const computeMinClearanceAt = (candX: number, candY: number): number => {
+    let minD = Infinity;
+    for (const sp of bodySamples) {
+      const d = Math.hypot(candX - sp.x, candY - sp.y);
+      if (d < minD) minD = d;
+    }
+    for (const dot of dotStrokes) {
+      const d = Math.hypot(candX - dot.at[0], candY - dot.at[1]);
+      if (d < minD) minD = d;
+    }
+    return Number(minD.toFixed(2));
+  };
+
+  let side: 'left' | 'right' = minX - 24 >= 20 ? 'left' : 'right';
+  let x = Number((side === 'left' ? minX - 24 : maxX + 24).toFixed(2));
+
+  // Ensure >= 18 units of clearance from every stroke and every dot while staying outside the letter
+  if (side === 'left') {
+    while (computeMinClearanceAt(x, y) < 18.5 && x - 1 >= 10) {
+      x = Number((x - 1).toFixed(2));
+    }
+    if (computeMinClearanceAt(x, y) < 18.5) {
+      side = 'right';
+      x = Number((maxX + 24).toFixed(2));
+      while (computeMinClearanceAt(x, y) < 18.5 && x + 1 <= 194) {
+        x = Number((x + 1).toFixed(2));
+      }
+    }
+  } else {
+    while (computeMinClearanceAt(x, y) < 18.5 && x + 1 <= 194) {
+      x = Number((x + 1).toFixed(2));
+    }
+  }
+
+  // Body angle facing the letter (head of CalligraphyAntSvgGroup points toward +X at 0 deg)
+  const angleDeg = side === 'left' ? 0 : 180;
+  const minClearance = computeMinClearanceAt(x, y);
+
+  return {
+    x,
+    y,
+    angleDeg,
+    bbox: {
+      minX: Number(minX.toFixed(2)),
+      maxX: Number(maxX.toFixed(2)),
+      minY: Number(minY.toFixed(2)),
+      maxY: Number(maxY.toFixed(2))
+    },
+    minClearance,
+    side,
+    isOnBaseline: y === glyph.baseline,
+    isOutsideLetter: x < minX || x > maxX
+  };
+}
+
+/**
+ * Phase A, C, D & FIX E:
  * Single source of truth timeline evaluator.
  * Given a glyph and a single normalized `progress` (0..1), computes:
  * - Stroke dashoffset progress (0..1) for each body stroke
  * - Ant position (x, y), tangent rotation (angleDeg), walk cycle state (isMoving),
- *   150ms corner pause, end-of-stroke bounce, dot-carrying from the side, and final jump
+ *   150ms corner pause, end-of-stroke bounce, dot-carrying from the side, and final baseline parking
  * - Dot visibility and pop scale (1.3 -> 1.0)
  */
 export function evaluateGlyphAnimationAtProgress(
@@ -389,6 +501,7 @@ export function evaluateGlyphAnimationAtProgress(
   );
 
   const pathLengths = bodyStrokes.map((s) => Math.max(20, computeSvgPathLength(s.d)));
+  const finalParkingSpot = computeGlyphFinalAntParkingSpot(glyph);
 
   // Build segments on a millisecond timeline
   type Segment =
@@ -443,7 +556,6 @@ export function evaluateGlyphAnimationAtProgress(
 
   bodyStrokes.forEach((stroke, idx) => {
     const len = pathLengths[idx];
-    // Phase A: duration proportional to length (about 700 ms per 100 units, min 500 ms)
     const drawMs = Math.max(500, Math.round((len / 100) * 700));
     const cornerT = detectSharpCornerNormalizedProgress(stroke.d);
 
@@ -459,7 +571,6 @@ export function evaluateGlyphAnimationAtProgress(
         toT: cornerT
       });
       cursorMs += firstMs;
-      // Phase D: short pause (150 ms) at corners
       segments.push({
         type: 'corner_pause',
         strokeIdx: idx,
@@ -489,7 +600,6 @@ export function evaluateGlyphAnimationAtProgress(
       cursorMs += drawMs;
     }
 
-    // Phase D: short pause (150 ms) at stroke end + small bounce
     segments.push({
       type: 'stroke_end_pause',
       strokeIdx: idx,
@@ -498,7 +608,6 @@ export function evaluateGlyphAnimationAtProgress(
     });
     cursorMs += 150;
 
-    // Phase A: 250 ms pause between strokes
     if (idx < bodyStrokes.length - 1) {
       segments.push({
         type: 'inter_stroke_pause',
@@ -510,8 +619,6 @@ export function evaluateGlyphAnimationAtProgress(
     }
   });
 
-  // Phase C: After the last stroke, the ant carries each dot (crumb) from the side,
-  // walks to its place and drops it with a small pop (scale 1.3 -> 1)
   dotStrokes.forEach((dot, dIdx) => {
     const [tx, ty] = dot.at;
     const fromX = tx >= 100 ? 186 : 14;
@@ -560,9 +667,9 @@ export function evaluateGlyphAnimationAtProgress(
       strokeProgresses: [],
       pathLengths: [],
       ant: {
-        x: 100,
-        y: 100,
-        angleDeg: 0,
+        x: finalParkingSpot.x,
+        y: finalParkingSpot.y,
+        angleDeg: finalParkingSpot.angleDeg,
         isMoving: false,
         isCornerPause: false,
         isStrokeEndBounce: false,
@@ -574,7 +681,6 @@ export function evaluateGlyphAnimationAtProgress(
     };
   }
 
-  // Initial state at progress === 0: empty guide, ant parked at start of stroke 0
   if (progress <= 0) {
     const startSample = getPointAndTangentAtNormalizedProgress(bodyStrokes[0].d, 0);
     return {
@@ -734,19 +840,11 @@ export function evaluateGlyphAnimationAtProgress(
         dotsState[seg.dotIdx].visible = true;
         // Pop scale 1.3 -> 1.0
         dotsState[seg.dotIdx].scale = Number((1.3 - 0.3 * localRatio).toFixed(2));
-        // Phase D.3: The ant steps aside outside all dots so it never stands on top of any dot
-        const maxDotX = Math.max(...dotStrokes.map((d) => d.at[0]), seg.x);
-        const minDotX = Math.min(...dotStrokes.map((d) => d.at[0]), seg.x);
-        const targetParkX =
-          maxDotX <= 145
-            ? Math.min(180, maxDotX + 28)
-            : Math.max(20, minDotX - 28);
-        const parkX = seg.x + (targetParkX - seg.x) * localRatio;
-        const parkY = Math.min(178, Math.max(22, seg.y + 8 * localRatio));
+        // FIX E: Use the exact same baseline parking spot for dot_pop so the ant does not move twice!
         antState = {
-          x: Number(parkX.toFixed(2)),
-          y: Number(parkY.toFixed(2)),
-          angleDeg: 0,
+          x: finalParkingSpot.x,
+          y: finalParkingSpot.y,
+          angleDeg: finalParkingSpot.angleDeg,
           isMoving: false,
           isCornerPause: false,
           isStrokeEndBounce: true,
@@ -765,26 +863,12 @@ export function evaluateGlyphAnimationAtProgress(
       dotsState[i].visible = true;
       dotsState[i].scale = 1;
     }
-    const lastBody = bodyStrokes[bodyStrokes.length - 1];
-    const endPt =
-      dotStrokes.length > 0
-        ? (() => {
-            const lastDot = dotStrokes[dotStrokes.length - 1];
-            const maxDotX = Math.max(...dotStrokes.map((d) => d.at[0]));
-            const minDotX = Math.min(...dotStrokes.map((d) => d.at[0]));
-            const px =
-              maxDotX <= 145
-                ? Math.min(180, maxDotX + 28)
-                : Math.max(20, minDotX - 28);
-            const py = Math.min(178, Math.max(22, lastDot.at[1] + 8));
-            return { x: px, y: py, angleDeg: 0 };
-          })()
-        : getPointAndTangentAtNormalizedProgress(lastBody.d, 1);
 
+    // FIX E: Final ant position standing ON the baseline, outside the letter, facing the letter
     antState = {
-      x: endPt.x,
-      y: endPt.y,
-      angleDeg: endPt.angleDeg,
+      x: finalParkingSpot.x,
+      y: finalParkingSpot.y,
+      angleDeg: finalParkingSpot.angleDeg,
       isMoving: false,
       isCornerPause: false,
       isStrokeEndBounce: false,
@@ -1237,18 +1321,94 @@ export interface DotTapLogEntry {
 }
 
 /**
- * PHASE B.1 & B.2:
- * Pure deterministic handler for a single pointerdown tap during the Dots step:
- * - Tapping an already placed dot (when closer than any empty target and within 24 viewBox units) removes it (undo).
- * - Otherwise, a tap snaps to the nearest EMPTY target within `maxSnapDistPx` (56 px scaled to viewBox, default 36u / 56px) and pops into place.
- * - A tap farther away is ignored (never counted as an extra dot!) with a gentle hint "Touche les pointillés".
+ * FIX D:
+ * Computes dot coordinates from the glyph body's bounding box with the clearance rule
+ * already in strokeMath (no overlap with the stroke: distance >= strokeWidth/2 + dotHalfDiag + 6).
+ */
+export function computeDotCoordinatesForBodyConfig(
+  glyph: GlyphForm,
+  dotsCount: 0 | 1 | 2 | 3,
+  dotsPosition: 'above' | 'below' | 'none'
+): [number, number][] {
+  if (dotsCount === 0 || dotsPosition === 'none') return [];
+
+  const bodyStrokes = glyph.strokes.filter(
+    (s): s is GlyphBodyStroke => s.kind === 'body'
+  );
+  const dotStrokes = glyph.strokes.filter(
+    (s): s is GlyphDotStroke => s.kind === 'dot'
+  );
+
+  // If this matches the letter's real dot configuration, use its validated coordinates directly
+  if (
+    dotsCount === dotStrokes.length &&
+    ((dotsPosition === 'above' && glyph.dotRule.position === 'above') ||
+      (dotsPosition === 'below' &&
+        (glyph.dotRule.position === 'below' || glyph.dotRule.position === 'inside')))
+  ) {
+    return dotStrokes.map((d) => [d.at[0], d.at[1]]);
+  }
+
+  const strokeWidth = bodyStrokes[0]?.width ?? DEFAULT_GLYPH_STROKE_WIDTH;
+  const dotHalfDiag = getDotHalfDiagonal(strokeWidth);
+  const requiredClearance = strokeWidth / 2 + dotHalfDiag + 6;
+
+  const samples: Point2D[] = [];
+  for (const bs of bodyStrokes) {
+    samples.push(...sampleSvgPathEqualLength(bs.d, 40));
+  }
+  const minX = samples.length ? Math.min(...samples.map((p) => p.x)) : 60;
+  const maxX = samples.length ? Math.max(...samples.map((p) => p.x)) : 140;
+  const minY = samples.length ? Math.min(...samples.map((p) => p.y)) : 70;
+  const maxY = samples.length ? Math.max(...samples.map((p) => p.y)) : 130;
+  const cx = Math.round((minX + maxX) / 2);
+
+  let baseY =
+    dotsPosition === 'below'
+      ? Math.min(176, Math.round(maxY + requiredClearance + 2))
+      : Math.max(24, Math.round(minY - requiredClearance - 2));
+
+  const buildCand = (yVal: number): [number, number][] => {
+    if (dotsCount === 1) return [[cx, yVal]];
+    if (dotsCount === 2) return [[cx - 11, yVal], [cx + 11, yVal]];
+    const apexY = dotsPosition === 'below' ? Math.min(182, yVal + 14) : Math.max(18, yVal - 14);
+    return [
+      [cx - 12, yVal],
+      [cx + 12, yVal],
+      [cx, apexY]
+    ];
+  };
+
+  // Step outward vertically if needed so every dot satisfies requiredClearance from body strokes
+  for (let step = 0; step < 30; step++) {
+    const pts = buildCand(baseY);
+    const allClear = pts.every(([px, py]) =>
+      samples.every((sp) => Math.hypot(px - sp.x, py - sp.y) >= requiredClearance - 0.5)
+    );
+    if (allClear) return pts;
+    baseY = dotsPosition === 'below' ? Math.min(182, baseY + 2) : Math.max(18, baseY - 2);
+  }
+
+  return buildCand(baseY);
+}
+
+/**
+ * FIX B:
+ * Pure deterministic handler for a single pointerdown tap during a Dot step:
+ * - Each dot step has its own target (`targetDot`, or `targetDots` in legacy callers).
+ * - A tap within the snap radius of THAT target = success (`action: 'snapped'`), the dot pops in place.
+ * - A tap farther away is ignored (`action: 'ignored'`) with the hint "Touche plus près du pointillé".
+ * - No "Un point de trop" message any more: it cannot happen.
  */
 export function processDotStepTap(params: {
   tap: Point2D;
-  targetDots: GlyphDotStroke[];
+  targetDot?: GlyphDotStroke;
+  targetDots?: GlyphDotStroke[];
   placedDots: PlacedDotItem[];
   canvasWidthPx?: number;
-}): {
+  allowUndo?: boolean;
+  }): {
+  snapped: boolean;
   nextDots: PlacedDotItem[];
   nextPlacedDots: PlacedDotItem[];
   hintFr?: string;
@@ -1256,24 +1416,29 @@ export function processDotStepTap(params: {
 } {
   const {
     tap,
+    targetDot,
     targetDots = [],
     placedDots = [],
-    canvasWidthPx = 320
+    canvasWidthPx = 320,
+    allowUndo = true
   } = params;
-  // Convert 56 screen px to 200-unit viewBox coordinates (min 35u so 56px on a 320px canvas is ~35u, and allow up to 56u if viewBox=200)
+
+  const effectiveTargets = targetDot ? [targetDot] : targetDots;
   const snapRadiusViewBox = Math.max(35, (56 / Math.max(200, canvasWidthPx)) * 200);
   const undoRadiusViewBox = Math.max(22, (36 / Math.max(200, canvasWidthPx)) * 200);
 
-  // 1. Find nearest already-placed dot
+  // 1. Find nearest already-placed dot (if undo is enabled)
   let nearestPlacedIdx = -1;
   let nearestPlacedDist = Infinity;
-  placedDots.forEach((pd, idx) => {
-    const d = distanceBetween(tap, { x: pd.x, y: pd.y });
-    if (d < nearestPlacedDist) {
-      nearestPlacedDist = d;
-      nearestPlacedIdx = idx;
-    }
-  });
+  if (allowUndo && !targetDot) {
+    placedDots.forEach((pd, idx) => {
+      const d = distanceBetween(tap, { x: pd.x, y: pd.y });
+      if (d < nearestPlacedDist) {
+        nearestPlacedDist = d;
+        nearestPlacedIdx = idx;
+      }
+    });
+  }
 
   // 2. Find nearest EMPTY target dot
   const usedTargetIds = new Set(
@@ -1283,7 +1448,7 @@ export function processDotStepTap(params: {
   );
   let nearestEmptyTarget: GlyphDotStroke | null = null;
   let nearestEmptyDist = Infinity;
-  for (const td of targetDots) {
+  for (const td of effectiveTargets) {
     if (usedTargetIds.has(td.id)) continue;
     const d = distanceBetween(tap, { x: td.at[0], y: td.at[1] });
     if (d < nearestEmptyDist) {
@@ -1292,8 +1457,9 @@ export function processDotStepTap(params: {
     }
   }
 
-  // If the learner taps directly on an already-placed dot (and it's closer than any empty target), remove it (undo)!
   if (
+    allowUndo &&
+    !targetDot &&
     nearestPlacedIdx !== -1 &&
     nearestPlacedDist <= undoRadiusViewBox &&
     nearestPlacedDist < nearestEmptyDist
@@ -1301,6 +1467,7 @@ export function processDotStepTap(params: {
     const removed = placedDots[nearestPlacedIdx];
     const nextDots = placedDots.filter((_, i) => i !== nearestPlacedIdx);
     return {
+      snapped: false,
       nextDots,
       nextPlacedDots: nextDots,
       log: {
@@ -1314,7 +1481,6 @@ export function processDotStepTap(params: {
     };
   }
 
-  // Otherwise, if there is an EMPTY target within 56 px (`snapRadiusViewBox`), snap to it!
   if (nearestEmptyTarget && nearestEmptyDist <= snapRadiusViewBox) {
     const nextDots: PlacedDotItem[] = [
       ...placedDots,
@@ -1326,6 +1492,7 @@ export function processDotStepTap(params: {
       }
     ];
     return {
+      snapped: true,
       nextDots,
       nextPlacedDots: nextDots,
       log: {
@@ -1339,10 +1506,9 @@ export function processDotStepTap(params: {
     };
   }
 
-  // Otherwise: tap is farther away (or all targets are filled and tap wasn't on a placed dot) -> IGNORE with gentle hint!
   let anyNearestTargetId: number | null = null;
   let anyNearestDist = Infinity;
-  for (const td of targetDots) {
+  for (const td of effectiveTargets) {
     const d = distanceBetween(tap, { x: td.at[0], y: td.at[1] });
     if (d < anyNearestDist) {
       anyNearestDist = d;
@@ -1350,8 +1516,9 @@ export function processDotStepTap(params: {
     }
   }
 
-  const hintFr = 'Touche les pointillés';
+  const hintFr = 'Touche plus près du pointillé';
   return {
+    snapped: false,
     nextDots: placedDots,
     nextPlacedDots: placedDots,
     hintFr,

@@ -118,6 +118,18 @@ p {
   animation: pulseOnce 420ms ease-out 1;
 }
 
+@keyframes dotPop {
+  0% { transform: scale(0.35); }
+  60% { transform: scale(1.18); }
+  100% { transform: scale(1); }
+}
+
+.dot-pop {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: dotPop 260ms cubic-bezier(0.22, 1, 0.36, 1) 1;
+}
+
 @keyframes slideUpSheet {
   from {
     opacity: 0;
@@ -206,13 +218,13 @@ p {
 @media (prefers-reduced-motion: reduce) {
   .animate-shake,
   .animate-pulse-once,
+  .dot-pop,
   .animate-sheet,
   .animate-step,
   .animate-wiggle,
   .ant-idle-node,
   .pressable:active {
     animation: none !important;
-    transform: none !important;
     transition: opacity 150ms ease-out !important;
   }
 }

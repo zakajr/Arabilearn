@@ -159,6 +159,7 @@ export function LetterLessonLoop({
   existingSubmission,
   coachMarkEnabled = false,
   animationsEnabled = true,
+  learnedLetterIds,
   onClose,
   onStepComplete,
   onSaveTraceForAlbum,
@@ -176,6 +177,7 @@ export function LetterLessonLoop({
   existingSubmission?: Submission;
   coachMarkEnabled?: boolean;
   animationsEnabled?: boolean;
+  learnedLetterIds?: string[];
   onClose: () => void;
   onStepComplete: (step: StepId, stars?: 0 | 1 | 2 | 3, skipped?: boolean) => void;
   onSaveTraceForAlbum?: (points: Point2D[], coverageScore: number) => void;
@@ -571,6 +573,11 @@ export function LetterLessonLoop({
   const [placedDots, setPlacedDots] = useState<
     { x: number; y: number; snapped: boolean; targetId?: number }[]
   >([]);
+  const [dotMissCount, setDotMissCount] = useState<number>(0);
+  const [revealDotTargetBriefly, setRevealDotTargetBriefly] =
+    useState<boolean>(false);
+  const revealDotTimerRef = useRef<number | null>(null);
+  const [ignoredTouchesLog, setIgnoredTouchesLog] = useState<string[]>([]);
   const dotTapLogsRef = useRef<DotTapLogEntry[]>([]);
   const [dotTapsReceivedCount, setDotTapsReceivedCount] = useState<number>(0);
   const lastDotPointerDownMsRef = useRef<number>(0);
@@ -584,11 +591,20 @@ export function LetterLessonLoop({
   const [compressedPreview, setCompressedPreview] = useState<string | null>(null);
   const [photoSent, setPhotoSent] = useState<boolean>(Boolean(existingSubmission));
 
-  // Step 5 ('retenir') 3-question quiz state (Phase B7 & E3)
-  const questions = React.useMemo(
-    () => buildQuestionsForLetter(letter, undefined, mode === 'kids' ? 3 : 4),
-    [letter, mode]
-  );
+  // Step 5 ('retenir') 3-question quiz state (Phase B7, E3 & FIX 1b: restrict pool to learned letters)
+  const questions = React.useMemo(() => {
+    const learnedSet = new Set([...(learnedLetterIds || []), letter.id]);
+    const learnedPool = LETTERS_DATA.filter((l) => learnedSet.has(l.id));
+    const effectivePool =
+      learnedPool.length >= 3
+        ? learnedPool
+        : LETTERS_DATA.slice(0, Math.max(3, learnedPool.length));
+    return buildQuestionsForLetter(
+      letter,
+      effectivePool,
+      mode === 'kids' ? 3 : 4
+    );
+  }, [letter, mode, learnedLetterIds]);
   const [quizIdx, setQuizIdx] = useState<number>(0);
   const [selectedOptIdx, setSelectedOptIdx] = useState<number | null>(null);
   const [quizAnswered, setQuizAnswered] = useState<boolean>(false);
@@ -620,9 +636,27 @@ export function LetterLessonLoop({
       window.clearTimeout(autoAdvanceTimerRef.current);
       autoAdvanceTimerRef.current = null;
     }
+    if (revealDotTimerRef.current) {
+      window.clearTimeout(revealDotTimerRef.current);
+      revealDotTimerRef.current = null;
+    }
     speechService.stopPenSound();
     clearInkCanvasOnly();
-    setPlacedDots([]);
+    setDotMissCount(0);
+    setRevealDotTargetBriefly(false);
+
+    const targetStep = tracingSubSteps[nextSubIdx];
+    if (
+      nextMode !== traceMode ||
+      nextSubIdx === 0 ||
+      !targetStep ||
+      targetStep.kind === 'body'
+    ) {
+      setPlacedDots([]);
+    } else if (targetStep.kind === 'dot') {
+      // Keep dots placed in earlier dot steps of the same mode
+      setPlacedDots((prev) => prev.slice(0, targetStep.dotIndex));
+    }
     dotTapLogsRef.current = [];
     setDotTapsReceivedCount(0);
     setSubStepIdx(nextSubIdx);
@@ -648,6 +682,9 @@ export function LetterLessonLoop({
       speechService.stopPenSound();
       if (autoAdvanceTimerRef.current) {
         window.clearTimeout(autoAdvanceTimerRef.current);
+      }
+      if (revealDotTimerRef.current) {
+        window.clearTimeout(revealDotTimerRef.current);
       }
       if (tracingToastTimerRef.current) {
         window.clearTimeout(tracingToastTimerRef.current);
@@ -691,6 +728,8 @@ export function LetterLessonLoop({
   const advanceAfterSubStepSuccess = () => {
     setFlashGreen(true);
     window.setTimeout(() => setFlashGreen(false), 450);
+    setDotMissCount(0);
+    setRevealDotTargetBriefly(false);
 
     // Move to next sub-step if any remain in this letter
     if (subStepIdx + 1 < tracingSubSteps.length) {
@@ -700,12 +739,7 @@ export function LetterLessonLoop({
         `Très bien · ${tracingSubSteps[nextSub].labelFr}`,
         'good'
       );
-      autoAdvanceTimerRef.current = window.setTimeout(() => {
-        setSubStepIdx(nextSub);
-        setPlacedDots([]);
-        dotTapLogsRef.current = [];
-        setDotTapsReceivedCount(0);
-      }, 420);
+      setSubStepIdx(nextSub);
       return;
     }
 
@@ -745,59 +779,75 @@ export function LetterLessonLoop({
   };
 
   /**
-   * PHASE B.2: PointerDown handler on the tracing canvas.
-   * For the Dots step:
-   * - Uses pointerdown ONLY, once per tap (guarded against duplicate events).
-   * - Tapping an already placed dot removes it (undo).
-   * - Tapping within 56 px of the nearest EMPTY target snaps the dot into place.
-   * - Tapping farther away is ignored with a gentle 2s top toast "Touche les pointillés".
-   * - Never shows an error before the learner presses Valider.
+   * FIX A & FIX B: PointerDown handler on the tracing canvas.
+   * - For tap steps ('dot'): NO e.width > 40 check. Each dot is its own step with its own target.
+   *   A tap within the snap radius of THAT target pops the dot in place, triggers haptic, and starts the next step.
+   *   A tap farther away is ignored with "Touche plus près du pointillé" (after 2 misses the target shows briefly, even in mode 3).
+   * - For drawing steps ('body'): ignore touch only if e.width > 90 && e.height > 90, and log ignored touches in the debug overlay.
    */
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (e.pointerType === 'touch' && e.width > 40) return;
-    e.preventDefault();
     setShowMoreMenu(false);
 
-    const pt = getCanvasPoint(e);
-
-    if (currentSubStep.kind === 'dots') {
+    if (currentSubStep.kind === 'dot') {
+      e.preventDefault();
       const nowMs = performance.now();
-      if (nowMs - lastDotPointerDownMsRef.current < 55) {
-        return; // Guard against double firing
+      if (nowMs - lastDotPointerDownMsRef.current < 45) {
+        return; // Guard against duplicate pointerdown
       }
       lastDotPointerDownMsRef.current = nowMs;
 
+      const pt = getCanvasPoint(e);
       const rect = e.currentTarget.getBoundingClientRect();
       const canvasWidthPx = rect.width > 0 ? rect.width : 316;
+      const targetDot = currentSubStep.dot;
 
       const tapResult = processDotStepTap({
         tap: pt,
-        targetDots: currentSubStep.dotStrokes || [],
+        targetDot,
         placedDots: placedDots || [],
         canvasWidthPx
       });
 
       dotTapLogsRef.current.push(tapResult.log);
       setDotTapsReceivedCount(dotTapLogsRef.current.length);
-      setPlacedDots(tapResult.nextDots ?? tapResult.nextPlacedDots ?? []);
 
-      const hintMessage = tapResult.log.hintFr ?? tapResult.hintFr;
-      if (tapResult.log.action === 'snapped') {
+      if (tapResult.snapped) {
+        setPlacedDots(tapResult.nextDots);
         speechService.triggerHaptic('stroke_ok');
-      } else if (tapResult.log.action === 'removed') {
-        speechService.triggerHaptic('stroke_ok');
-      } else if (hintMessage) {
-        // Ignored off-target tap: gentle hint toast, never counts as an extra dot
-        showTracingStatusToast(hintMessage, 'neutral');
+        advanceAfterSubStepSuccess();
+      } else {
+        const nextMisses = dotMissCount + 1;
+        setDotMissCount(nextMisses);
+        if (nextMisses >= 2) {
+          setRevealDotTargetBriefly(true);
+          if (revealDotTimerRef.current) {
+            window.clearTimeout(revealDotTimerRef.current);
+          }
+          revealDotTimerRef.current = window.setTimeout(() => {
+            setRevealDotTargetBriefly(false);
+            revealDotTimerRef.current = null;
+          }, 1400);
+        }
+        showTracingStatusToast('Touche plus près du pointillé', 'neutral');
       }
       return;
     }
 
-    // BODY STROKE STEP: start drawing with Reed-Pen ink & synthesized pen sound
+    // BODY STROKE STEP: ignore palm touch only if e.width > 90 && e.height > 90 (Fix A)
+    if (e.pointerType === 'touch' && e.width > 90 && e.height > 90) {
+      setIgnoredTouchesLog((prev) => [
+        ...prev.slice(-9),
+        `Ignoré: ${Math.round(e.width)}x${Math.round(e.height)}px`
+      ]);
+      return;
+    }
+
+    e.preventDefault();
     isDrawingRef.current = true;
     lastMoveTimeRef.current = performance.now();
     currentStrokeWidthRef.current = 14;
     setSelectedHistoryAttemptId(null);
+    const pt = getCanvasPoint(e);
     const inside = isPointInsideStrokeCorridor(pt, currentSubStep.stroke, mode);
     learnerPointsRef.current = [{ x: pt.x, y: pt.y, width: 14, inside }];
     const canvas = canvasRef.current;
@@ -809,9 +859,15 @@ export function LetterLessonLoop({
   };
 
   const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (currentSubStep.kind === 'dots') return;
+    if (currentSubStep.kind === 'dot') return;
     if (!isDrawingRef.current) return;
-    if (e.pointerType === 'touch' && e.width > 40) return;
+    if (e.pointerType === 'touch' && e.width > 90 && e.height > 90) {
+      setIgnoredTouchesLog((prev) => [
+        ...prev.slice(-9),
+        `Move ignoré: ${Math.round(e.width)}x${Math.round(e.height)}px`
+      ]);
+      return;
+    }
     e.preventDefault();
 
     const pt = getCanvasPoint(e);
@@ -850,7 +906,7 @@ export function LetterLessonLoop({
 
   const handlePointerUp = () => {
     speechService.stopPenSound();
-    if (currentSubStep.kind === 'dots') return;
+    if (currentSubStep.kind === 'dot') return;
     if (!isDrawingRef.current) return;
     isDrawingRef.current = false;
 
@@ -860,23 +916,32 @@ export function LetterLessonLoop({
   };
 
   const evaluateCurrentSubStep = () => {
-    // PHASE B.2: On Valider in the Dots step:
-    // too few -> "Il manque un point", too many -> "Un point de trop"
-    if (currentSubStep.kind === 'dots') {
-      const primaryCorridor = bodyStrokes[0]?.corridor ?? 22;
-      const res = validateDotsStep({
-        learnerDots: (placedDots || []).map((d) => ({ x: d.x, y: d.y })),
-        targetDots: currentSubStep.dotStrokes || [],
-        corridor: primaryCorridor,
-        mode
-      });
-      if (res.passed) {
+    // FIX B: In a dot step, tapping the target advances immediately; if Valider is pressed before tapping,
+    // prompt "Touche plus près du pointillé" (and reveal target after 2 misses).
+    if (currentSubStep.kind === 'dot') {
+      const targetDot = currentSubStep.dot;
+      const alreadyPlaced = (placedDots || []).some(
+        (d) =>
+          d.targetId === targetDot.id ||
+          Math.hypot(d.x - targetDot.at[0], d.y - targetDot.at[1]) <= 12
+      );
+      if (alreadyPlaced) {
         advanceAfterSubStepSuccess();
       } else {
+        const nextMisses = dotMissCount + 1;
+        setDotMissCount(nextMisses);
+        if (nextMisses >= 2) {
+          setRevealDotTargetBriefly(true);
+          if (revealDotTimerRef.current) {
+            window.clearTimeout(revealDotTimerRef.current);
+          }
+          revealDotTimerRef.current = window.setTimeout(() => {
+            setRevealDotTargetBriefly(false);
+            revealDotTimerRef.current = null;
+          }, 1400);
+        }
         speechService.triggerHaptic('error');
-        setShakeCanvas(true);
-        window.setTimeout(() => setShakeCanvas(false), 320);
-        showTracingStatusToast(res.messageFr, 'bad');
+        showTracingStatusToast('Touche plus près du pointillé', 'neutral');
       }
       return;
     }
@@ -1166,24 +1231,69 @@ export function LetterLessonLoop({
         </div>
       )}
 
-      {/* PHASE A.1: Top Bar: Close button, 5-step bar (icons + labels), letter name at the right. Nothing else on that row. */}
+      {/* PHASE A.1 & FIX B: Top Bar: Close button on left, letter name + "..." menu button (in Tracer) on right. */}
       <div className="max-w-[480px] w-full mx-auto px-[16px] pt-2 pb-1 flex flex-col gap-1.5 shrink-0">
         <div className="flex items-center justify-between gap-2 min-w-0">
           <IconButton ariaLabel="Fermer la leçon" onClick={onClose}>
             <X className="w-5 h-5" />
           </IconButton>
 
-          <button
-            type="button"
-            data-testid="lesson-header-letter-name"
-            aria-label={`Lettre ${letter.shortName}`}
-            onClick={handleTitleTripleTap}
-            className={`min-h-[48px] px-2 flex items-center justify-end font-display ${
-              letter.shortName.length > 12 ? 'text-[16px]' : 'text-[20px]'
-            } text-[var(--ink)] whitespace-nowrap shrink-0 text-right cursor-pointer`}
-          >
-            {letter.shortName}
-          </button>
+          <div className="flex items-center gap-1.5 shrink-0 relative">
+            <button
+              type="button"
+              data-testid="lesson-header-letter-name"
+              aria-label={`Lettre ${letter.shortName}`}
+              onClick={handleTitleTripleTap}
+              className={`min-h-[48px] px-2 flex items-center justify-end font-display ${
+                letter.shortName.length > 12 ? 'text-[16px]' : 'text-[20px]'
+              } text-[var(--ink)] whitespace-nowrap shrink-0 text-right cursor-pointer`}
+            >
+              {letter.shortName}
+            </button>
+
+            {currentStepId === 'tracer' && (
+              <div className="relative">
+                <button
+                  type="button"
+                  data-testid="tracing-more-menu-btn"
+                  aria-label="Plus d'options de tracé"
+                  aria-expanded={showMoreMenu}
+                  onClick={() => setShowMoreMenu((m) => !m)}
+                  className="w-[48px] h-[48px] min-w-[48px] min-h-[48px] rounded-full bg-[var(--surface)] border border-[var(--line)] flex items-center justify-center text-[var(--ink)] pressable cursor-pointer"
+                >
+                  <MoreHorizontal className="w-5 h-5" />
+                </button>
+
+                {showMoreMenu && (
+                  <div
+                    data-testid="tracing-more-menu-popover"
+                    className="absolute right-0 top-[52px] z-30 w-[200px] rounded-[16px] bg-[var(--surface)] border border-[var(--line)] shadow-lg p-1.5 flex flex-col gap-1"
+                  >
+                    <button
+                      type="button"
+                      data-testid="open-ton-essai-menu-btn"
+                      onClick={() => {
+                        setShowMoreMenu(false);
+                        setShowTonEssaiSheet(true);
+                      }}
+                      className="w-full min-h-[48px] px-3 rounded-[12px] text-left text-[13px] font-semibold text-[var(--ink)] flex items-center gap-2 pressable cursor-pointer"
+                    >
+                      <BookmarkCheck className="w-4 h-4 text-[var(--brand)] shrink-0" />
+                      <span>Ton essai</span>
+                    </button>
+                    <button
+                      type="button"
+                      data-testid="skip-trace-step-btn"
+                      onClick={handleSkipTraceStep}
+                      className="w-full min-h-[48px] px-3 rounded-[12px] text-left text-[13px] font-semibold text-[var(--ink)]/80 flex items-center gap-2 pressable cursor-pointer"
+                    >
+                      <span>Passer cette étape</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         </div>
 
         <Stepper
@@ -1393,6 +1503,8 @@ export function LetterLessonLoop({
                       height={dotRectSide}
                       rx="1.6"
                       fill="#07463D"
+                      stroke="#FFFFFF"
+                      strokeWidth="2"
                     />
                   </g>
                 ))}
@@ -1631,64 +1743,81 @@ export function LetterLessonLoop({
         )}
 
         {/* =====================================================================
-            STEP 3: TRACER — REBUILT TOP-TO-BOTTOM (PHASE A & PHASE B)
-            1. Top bar (above): Close button, 5-step bar, letter name at the right.
-            2. One small status line under it: "Trait 1/2" or "Points" (never truncated/overlapped)
-               + small "..." menu button on the right ("Passer cette étape", "Ton essai").
+            STEP 3: TRACER — REBUILT FOR FIX A & FIX B
+            1. Top bar (above): Close button, 5-step bar, letter name + "..." menu button at the right.
+            2. Clean step indicator under top bar and above canvas:
+               - Line 1: ONE row of numbered circles 1, 2, 3... (28px, 8px gap, connected by thin line);
+                 done = green with a check, current = saffron, next = outline.
+               - Line 2: below the row, one short label on its own line ("Trait" or "Point 1").
+               - Nothing else on those two lines.
             3. The canvas: the hero, >= 85% of screen width, square, centered.
             4. Under the canvas: ONLY three icon buttons with labels: Effacer, Animation, Guide (1/3).
             5. Sticky bottom: the saffron "Valider" button.
            ===================================================================== */}
         {currentStepId === 'tracer' && (
           <div className="flex flex-col items-center justify-center gap-2 w-full">
-            {/* 2. One small status line under top bar: "Trait 1/2" or "Points" + "..." menu */}
-            <div className="w-[88vw] max-w-[336px] flex items-center justify-between gap-2 relative">
-              <span
+            {debugOverlayOpen && ignoredTouchesLog.length > 0 && (
+              <div
+                data-testid="tracing-ignored-touches-debug"
+                className="w-[88vw] max-w-[336px] rounded-[10px] bg-[#0A1F1B] text-[#F2FAF7] px-2.5 py-1 font-mono text-[10px]"
+              >
+                Touches ignorées : {ignoredTouchesLog.join(' · ')}
+              </div>
+            )}
+
+            {/* 2. FIX B: Clean step indicator (no overlap) */}
+            <div
+              data-testid="tracing-step-indicator"
+              className="w-full flex flex-col items-center justify-center gap-1"
+            >
+              <div
+                data-testid="tracing-step-indicator-row"
+                className="flex items-center justify-center"
+              >
+                {tracingSubSteps.map((stepItem, idx) => {
+                  const isDone = traceDoneWithStar || idx < subStepIdx;
+                  const isCurrent = !traceDoneWithStar && idx === subStepIdx;
+                  return (
+                    <React.Fragment key={stepItem.id}>
+                      {idx > 0 && (
+                        <div
+                          data-testid={`tracing-step-connector-${idx}`}
+                          className={`w-[8px] h-[2px] shrink-0 ${
+                            idx <= subStepIdx || traceDoneWithStar
+                              ? 'bg-[var(--good)]'
+                              : 'bg-[var(--line)]'
+                          }`}
+                        />
+                      )}
+                      <div
+                        data-testid={`tracing-step-circle-${idx + 1}`}
+                        data-state={
+                          isDone ? 'done' : isCurrent ? 'current' : 'next'
+                        }
+                        className={`w-[28px] h-[28px] rounded-full flex items-center justify-center text-[12px] font-bold shrink-0 select-none ${
+                          isDone
+                            ? 'bg-[var(--good)] text-white'
+                            : isCurrent
+                            ? 'bg-[var(--accent)] text-[var(--accent-ink)]'
+                            : 'bg-[var(--surface)] border-2 border-[var(--line)] text-[var(--ink)]/70'
+                        }`}
+                      >
+                        {isDone ? (
+                          <Check className="w-3.5 h-3.5 stroke-[2.5]" />
+                        ) : (
+                          <span>{idx + 1}</span>
+                        )}
+                      </div>
+                    </React.Fragment>
+                  );
+                })}
+              </div>
+
+              <div
                 data-testid="tracing-substep-label"
-                className="inline-flex items-center px-3 py-1 rounded-full bg-[var(--brand-deep)] text-white font-mono-tag text-[12px] font-bold whitespace-nowrap shrink-0"
+                className="text-[13px] font-bold text-[var(--ink)] leading-tight text-center whitespace-nowrap select-none"
               >
                 {currentSubStep.labelFr}
-              </span>
-
-              <div className="relative">
-                <button
-                  type="button"
-                  data-testid="tracing-more-menu-btn"
-                  aria-label="Plus d'options de tracé"
-                  aria-expanded={showMoreMenu}
-                  onClick={() => setShowMoreMenu((m) => !m)}
-                  className="w-[48px] h-[48px] min-w-[48px] min-h-[48px] rounded-full bg-[var(--surface)] border border-[var(--line)] flex items-center justify-center text-[var(--ink)] pressable cursor-pointer"
-                >
-                  <MoreHorizontal className="w-5 h-5" />
-                </button>
-
-                {showMoreMenu && (
-                  <div
-                    data-testid="tracing-more-menu-popover"
-                    className="absolute right-0 top-[52px] z-30 w-[200px] rounded-[16px] bg-[var(--surface)] border border-[var(--line)] shadow-lg p-1.5 flex flex-col gap-1"
-                  >
-                    <button
-                      type="button"
-                      data-testid="open-ton-essai-menu-btn"
-                      onClick={() => {
-                        setShowMoreMenu(false);
-                        setShowTonEssaiSheet(true);
-                      }}
-                      className="w-full min-h-[48px] px-3 rounded-[12px] text-left text-[13px] font-semibold text-[var(--ink)] flex items-center gap-2 pressable cursor-pointer"
-                    >
-                      <BookmarkCheck className="w-4 h-4 text-[var(--brand)] shrink-0" />
-                      <span>Ton essai</span>
-                    </button>
-                    <button
-                      type="button"
-                      data-testid="skip-trace-step-btn"
-                      onClick={handleSkipTraceStep}
-                      className="w-full min-h-[48px] px-3 rounded-[12px] text-left text-[13px] font-semibold text-[var(--ink)]/80 flex items-center gap-2 pressable cursor-pointer"
-                    >
-                      <span>Passer cette étape</span>
-                    </button>
-                  </div>
-                )}
               </div>
             </div>
 
@@ -1736,7 +1865,7 @@ export function LetterLessonLoop({
                 {/* 1. Completed body strokes stay drawn in dark green (#07463D) */}
                 {bodyStrokes.map((bs, idx) => {
                   const isCompletedBodyStroke =
-                    currentSubStep.kind === 'dots' || idx < subStepIdx;
+                    currentSubStep.kind === 'dot' || idx < subStepIdx;
                   if (!isCompletedBodyStroke) return null;
                   return (
                     <path
@@ -1809,52 +1938,72 @@ export function LetterLessonLoop({
                     );
                   })()}
 
-                {/* 3. PHASE B.3: Faint dashed target diamonds ONLY in the 'Points' step AND ONLY in Guide Mode 1.
-                    Each touch area >= 48px (r=16 in 200u viewBox = ~50px on 316px canvas), spread with >= 1 dot diameter gap,
-                    and softly pulsing in guide mode 1. */}
-                {currentSubStep.kind === 'dots' &&
-                  traceMode === 1 &&
-                  (currentSubStep.dotStrokes || []).map((ds) => (
-                    <g
-                      key={`target_dot_${ds.id}`}
-                      data-testid={`dot-target-circle-${ds.id}`}
-                      transform={`translate(${ds.at[0]}, ${ds.at[1]})`}
-                      className="animate-pulse"
-                    >
-                      {/* >= 48px visual & touch target halo */}
-                      <circle
-                        cx={0}
-                        cy={0}
-                        r={16}
-                        fill="rgba(11, 107, 93, 0.08)"
-                        stroke="var(--brand)"
-                        strokeWidth="1.5"
-                        strokeDasharray="3 3"
-                      />
-                      <g transform="rotate(45)">
-                        <rect
-                          x={-(dotRectSide + 2) / 2}
-                          y={-(dotRectSide + 2) / 2}
-                          width={dotRectSide + 2}
-                          height={dotRectSide + 2}
-                          rx="2"
-                          fill="none"
-                          stroke="var(--brand)"
-                          strokeWidth="2"
-                          strokeDasharray="3 3"
-                        />
+                {/* 3. FIX A & FIX B: Each dot step shows ONLY its own target:
+                    - mode 1: dashed diamond, pulsing (nested group so transform & animate-pulse are never on the same SVG element);
+                    - mode 2: 20% opacity;
+                    - mode 3: nothing (unless 2 misses occurred, then revealed briefly). */}
+                {currentSubStep.kind === 'dot' &&
+                  (traceMode === 1 ||
+                    traceMode === 2 ||
+                    revealDotTargetBriefly) &&
+                  (() => {
+                    const ds = currentSubStep.dot;
+                    const targetOpacity =
+                      traceMode === 1 ? 1 : traceMode === 2 ? 0.2 : 0.75;
+                    return (
+                      <g
+                        key={`target_dot_${ds.id}`}
+                        data-testid={`dot-target-circle-${ds.id}`}
+                        transform={`translate(${ds.at[0]}, ${ds.at[1]})`}
+                        opacity={targetOpacity}
+                      >
+                        <g
+                          className={
+                            traceMode === 1 ? 'animate-pulse' : undefined
+                          }
+                        >
+                          {/* >= 48px visual & touch target halo */}
+                          <circle
+                            cx={0}
+                            cy={0}
+                            r={16}
+                            fill="rgba(11, 107, 93, 0.08)"
+                            stroke="var(--brand)"
+                            strokeWidth="1.5"
+                            strokeDasharray="3 3"
+                          />
+                          <g transform="rotate(45)">
+                            <rect
+                              x={-(dotRectSide + 2) / 2}
+                              y={-(dotRectSide + 2) / 2}
+                              width={dotRectSide + 2}
+                              height={dotRectSide + 2}
+                              rx="2"
+                              fill="none"
+                              stroke="var(--brand)"
+                              strokeWidth="2"
+                              strokeDasharray="3 3"
+                            />
+                          </g>
+                        </g>
                       </g>
-                    </g>
-                  ))}
+                    );
+                  })()}
 
-                {/* 4. Learner's snapped diamond dots (rotated 45 deg, size 0.9 x strokeWidth) */}
-                {currentSubStep.kind === 'dots' &&
-                  (placedDots || []).map((d, i) => (
+                {/* 4. FIX A & FIX B: Learner's snapped diamond dots stay visible in dark green (#07463D)
+                    with a 2px white outline and nested-group .dot-pop animation (never transform + CSS animation on same element) */}
+                {(placedDots || []).map((d, i) => (
+                  <g
+                    key={`placed_dot_${d.targetId ?? i}_${d.x}_${d.y}`}
+                    data-testid={`placed-dot-${i}`}
+                    transform={`translate(${d.x}, ${d.y}) rotate(45)`}
+                  >
                     <g
-                      key={`placed_dot_${i}_${d.x}_${d.y}`}
-                      data-testid={`placed-dot-${i}`}
-                      transform={`translate(${d.x}, ${d.y}) rotate(45)`}
-                      className="animate-pulse-once"
+                      className="dot-pop"
+                      style={{
+                        transformBox: 'fill-box',
+                        transformOrigin: 'center'
+                      }}
                     >
                       <rect
                         x={-dotRectSide / 2}
@@ -1863,9 +2012,12 @@ export function LetterLessonLoop({
                         height={dotRectSide}
                         rx="1.6"
                         fill="#07463D"
+                        stroke="#FFFFFF"
+                        strokeWidth="2"
                       />
                     </g>
-                  ))}
+                  </g>
+                ))}
               </svg>
 
               {/* Interactive Pointer Canvas (pointerdown ONLY for dots, ink STAYS after validation) */}

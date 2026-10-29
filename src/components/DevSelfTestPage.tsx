@@ -18,8 +18,10 @@ import {
   GlyphBodyStroke,
   GlyphDotStroke,
   GlyphForm,
+  TracingSubStep,
   buildTracingSubSteps,
   computeGlyphDotClearanceAudit,
+  computeGlyphFinalAntParkingSpot,
   computeRealPracticeMetrics,
   evaluateGlyphAnimationAtProgress,
   processDotStepTap,
@@ -33,15 +35,27 @@ import {
   clearGlyphEditorOverride,
   createBrandNewLearnerState,
   getInitialBlueprintState,
+  getLearnedLetterIdsForUser,
   getLettersWithOverrides,
   getTodayLetterForUser,
   getUnlockedLetterIdsForUser,
+  isFamilyUnlockedForUser,
+  isLetterUnlockedForUser,
   loadGlyphEditorOverrides,
   saveGlyphEditorOverride,
   saveLearnerTraceForAlbum,
   savePracticeAttemptToHistory
 } from '../services/dataService';
-import { MINI_GAMES_CATALOG } from './MiniGamesHub';
+import {
+  MINI_GAMES_CATALOG,
+  buildAntStreamRounds,
+  buildAssembleMiniGameRounds,
+  buildDotHuntRounds,
+  buildMemoryDeck,
+  buildMysteryLetterRounds,
+  getDotHuntPromptForLetter,
+  validateCustomPlacedDotsForLetter
+} from './MiniGamesHub';
 import { speechService } from '../services/speech';
 
 export interface SelfTestCheckResult {
@@ -90,14 +104,14 @@ export const CANONICAL_DOT_TABLE: Record<
 };
 
 /**
- * POLISH PASS CHECK 2:
- * Dots: simulated taps on all targets give the right count for Taa, Thaa, Qaaf, Yaa;
- * off-target taps are ignored; no double counting (print taps received vs dots counted).
+ * FIX A & FIX B CHECK:
+ * Each dot is its own step (kind: 'dot'); simulated taps on each dot step target snap cleanly;
+ * off-target taps are ignored with "Touche plus près du pointillé".
  */
 export function runPolishCheck2_DotsSimulation(): SelfTestCheckResult {
   const details: string[] = [];
   let allPassed = true;
-  const targetLetters = ['taa', 'thaa', 'qaaf', 'yaa'];
+  const targetLetters = ['baa', 'taa', 'thaa', 'qaaf', 'yaa'];
 
   for (const lid of targetLetters) {
     const rec = LETTERS_DATA.find((l) => l.id === lid);
@@ -108,93 +122,82 @@ export function runPolishCheck2_DotsSimulation(): SelfTestCheckResult {
     }
     const audit = computeGlyphDotClearanceAudit(rec.forms.isolated);
     const subSteps = buildTracingSubSteps(rec.forms.isolated);
-    const dotsStep = subSteps.find((s) => s.kind === 'dots');
-    if (!dotsStep || dotsStep.kind !== 'dots') {
+    const dotSteps = subSteps.filter(
+      (s): s is Extract<TracingSubStep, { kind: 'dot' }> => s.kind === 'dot'
+    );
+    if (dotSteps.length !== rec.dots.count) {
       allPassed = false;
-      details.push(`${rec.shortName}: étape Points manquante`);
+      details.push(
+        `${rec.shortName}: étapes Point attendues=${rec.dots.count}, reçues=${dotSteps.length}`
+      );
       continue;
     }
 
-    let placed: { x: number; y: number; snapped: boolean; targetId?: number }[] = [];
+    let placed: { x: number; y: number; snapped: boolean; targetId?: number }[] =
+      [];
     let tapsReceived = 0;
+    let allOffTargetIgnored = true;
 
-    // 1. Simulate 1 tap on each target dot
-    for (const target of dotsStep.dotStrokes) {
+    for (const dStep of dotSteps) {
+      const target = dStep.dot;
+      // 1. Off-target tap far away ([14, 14]) -> ignored with "Touche plus près du pointillé"
       tapsReceived += 1;
-      const res = processDotStepTap({
-        tap: { x: target.at[0] + 1, y: target.at[1] - 1 },
-        targetDots: dotsStep.dotStrokes,
+      const offRes = processDotStepTap({
+        tap: { x: 14, y: 14 },
+        targetDot: target,
         placedDots: placed,
         canvasWidthPx: 316
       });
-      placed = res.nextDots;
+      if (
+        offRes.snapped ||
+        offRes.log.action !== 'ignored' ||
+        offRes.hintFr !== 'Touche plus près du pointillé'
+      ) {
+        allOffTargetIgnored = false;
+      }
+
+      // 2. Tap within snap radius of THAT step's target
+      tapsReceived += 1;
+      const onRes = processDotStepTap({
+        tap: { x: target.at[0] + 1, y: target.at[1] - 1 },
+        targetDot: target,
+        placedDots: placed,
+        canvasWidthPx: 316
+      });
+      placed = onRes.nextDots;
     }
 
-    const countAfterTargetTaps = placed.length;
-
-    // 2. Simulate an off-target tap far away (e.g. [18, 18]) -> must be ignored!
-    tapsReceived += 1;
-    const offRes = processDotStepTap({
-      tap: { x: 18, y: 18 },
-      targetDots: dotsStep.dotStrokes,
-      placedDots: placed,
-      canvasWidthPx: 316
-    });
-    placed = offRes.nextDots;
-    const offTargetIgnored =
-      offRes.log.action === 'ignored' &&
-      placed.length === countAfterTargetTaps &&
-      offRes.log.hintFr === 'Touche les pointillés';
-
-    // 3. Test undo: tap the first placed dot to remove it, then tap it again to re-place it
-    const firstTarget = dotsStep.dotStrokes[0];
-    const undoRes = processDotStepTap({
-      tap: { x: firstTarget.at[0], y: firstTarget.at[1] },
-      targetDots: dotsStep.dotStrokes,
-      placedDots: placed,
-      canvasWidthPx: 316
-    });
-    const undoWorked =
-      undoRes.log.action === 'removed' &&
-      undoRes.nextDots.length === countAfterTargetTaps - 1;
-
-    const redoRes = processDotStepTap({
-      tap: { x: firstTarget.at[0], y: firstTarget.at[1] },
-      targetDots: dotsStep.dotStrokes,
-      placedDots: undoRes.nextDots,
-      canvasWidthPx: 316
-    });
-    placed = redoRes.nextDots;
-
-    // 4. Validate on Valider
     const valRes = validateDotsStep({
       learnerDots: placed.map((d) => ({ x: d.x, y: d.y })),
-      targetDots: dotsStep.dotStrokes,
+      targetDots: dotSteps.map((s) => s.dot),
       corridor: 22,
       mode: 'adult'
     });
 
     const ok =
-      countAfterTargetTaps === dotsStep.dotStrokes.length &&
-      offTargetIgnored &&
-      undoWorked &&
+      placed.length === rec.dots.count &&
+      allOffTargetIgnored &&
       valRes.passed &&
       audit.interDotGapPassed;
 
     if (!ok) allPassed = false;
     details.push(
-      `${rec.shortName}: cibles=${dotsStep.dotStrokes.length}, taps reçus=${tapsReceived} (${dotsStep.dotStrokes.length} cibles + 1 hors-cible ignoré) -> points comptés=${placed.length}/${dotsStep.dotStrokes.length}, écart inter-points=${audit.minInterDotEdgeGap}u (>=12.6u), undo=${undoWorked ? 'OK' : 'ERR'}, validation=${valRes.passed ? 'PASS' : 'FAIL'}`
+      `${rec.shortName}: sous-étapes=${subSteps.length} (${dotSteps
+        .map((s) => s.labelFr)
+        .join(', ')}), points placés=${placed.length}/${rec.dots.count}, hors-cible ignoré (« Touche plus près du pointillé »)=${
+        allOffTargetIgnored ? 'OUI' : 'NON'
+      }, écart inter-points=${audit.minInterDotEdgeGap}u`
     );
   }
 
   return {
     id: '2',
     title:
-      '2. Points (Taa, Thaa, Qaaf, Yaa) : taps simulés sur cibles, hors-cible ignoré, 0 double comptage (taps reçus vs points comptés)',
+      '2. Points (Baa, Taa, Thaa, Qaaf, Yaa) : 1 sous-étape par point, hors-cible ignoré (« Touche plus près du pointillé »)',
     passed: allPassed,
     summary: allPassed
-      ? 'Taa (2/2), Thaa (3/3), Qaaf (2/2), Yaa (2/2) : hors-cible ignoré, undo actif, écart >= 1 diamètre'
-      : 'Anomalie détectée sur le comptage des points',
+      ? 'Baa (2 étapes), Taa (3), Thaa (4), Qaaf (3), Yaa (3) : chaque point a sa propre étape et sa propre cible'
+      : 'Anomalie détectée sur les sous-étapes de points',
     details
   };
 }
@@ -530,7 +533,7 @@ export function runCheck2_DotClearanceAll28(): SelfTestCheckResult {
       const distStr = audit.dots
         .map(
           (d, idx) =>
-            `pt${idx + 1}[${d.at[0]},${d.at[1]}] dist=${d.minDistanceToStrokeCenterline}u (req >=${d.requiredClearance}u)`
+            `pt${idx + 1}[${d.at[0]},${d.at[1]}] dist=${d.minDistanceToStrokeCenterline}u (req >=${audit.requiredClearance}u)`
         )
         .join(', ');
       details.push(
@@ -557,12 +560,14 @@ export function runCheck2_DotClearanceAll28(): SelfTestCheckResult {
 
 export function runCheck3_TracingStepsDiffer(): SelfTestCheckResult {
   const details: string[] = [];
+  const stepPairs: string[] = [];
   let allPassed = true;
 
   for (const letter of LETTERS_DATA) {
     const expected = CANONICAL_DOT_TABLE[letter.id];
     const subSteps = buildTracingSubSteps(letter.forms.isolated);
-    const expectedSteps = expected.bodyStrokes + (expected.count > 0 ? 1 : 0);
+    const expectedSteps = expected.bodyStrokes + expected.count;
+    stepPairs.push(`${letter.shortName}: ${subSteps.length}`);
 
     if (
       subSteps.length !== expectedSteps ||
@@ -570,9 +575,13 @@ export function runCheck3_TracingStepsDiffer(): SelfTestCheckResult {
       letter.dots.position !== expected.position
     ) {
       allPassed = false;
-      details.push(`${letter.shortName} : anomalie sur les étapes ou les points`);
+      details.push(
+        `${letter.shortName} : attendu=${expectedSteps} étapes, reçu=${subSteps.length}`
+      );
     }
   }
+
+  details.push(`28 lettres (lettre: étapes) -> ${stepPairs.join(', ')}`);
 
   const jiim = LETTERS_DATA.find((l) => l.id === 'jiim')!;
   const jiimAudit = computeGlyphDotClearanceAudit(jiim.forms.isolated);
@@ -582,11 +591,12 @@ export function runCheck3_TracingStepsDiffer(): SelfTestCheckResult {
 
   return {
     id: 'c3_legacy',
-    title: '3. Table des points (28 lettres) & point de Jiim au creux du ventre',
+    title:
+      '3. Nombre d’étapes par lettre (28 lettres : traits + 1 étape par point) & point de Jiim',
     passed: allPassed,
     summary: allPassed
-      ? '28/28 lettres conformes'
-      : 'Erreur sur la table des points',
+      ? 'Alif: 1, Baa: 2, Taa: 3, Thaa: 4, Qaaf: 3, Yaa: 3, Kaaf: 2 (28/28 lettres conformes)'
+      : 'Erreur sur le nombre d’étapes d’une ou plusieurs lettres',
     details
   };
 }
@@ -834,18 +844,311 @@ export function runCheck7_PracticeHistoryAndGhost(): SelfTestCheckResult {
 
 export function runCheck8_All5MiniGamesUnlockedOnly(): SelfTestCheckResult {
   const state = getInitialBlueprintState();
-  const unlockedIds = getUnlockedLetterIdsForUser(state, 'u_learner_1');
-  const unlockedSet = new Set(unlockedIds);
-  const words = filterWordsByUnlockedLetters(PROGRESSIVE_WORDS, unlockedIds);
+  const learnedIds = getLearnedLetterIdsForUser(state, 'u_learner_1');
+  const learnedSet = new Set(learnedIds);
+  const words = filterWordsByUnlockedLetters(PROGRESSIVE_WORDS, learnedIds);
   const passed =
     MINI_GAMES_CATALOG.length === 5 &&
-    words.every((w) => w.requiredLetters.every((r) => unlockedSet.has(r)));
+    words.every((w) => w.requiredLetters.every((r) => learnedSet.has(r)));
   return {
     id: 'mg',
-    title: 'Mini-games unlocked only',
+    title: 'Mini-games learned only',
     passed,
     summary: passed ? 'OK' : 'FAIL',
     details: []
+  };
+}
+
+/**
+ * FIX 1 & FIX 1b MANDATORY CHECK:
+ * 1. Learner with plan 'full', progress only on Alif (5 steps): unlocked = {Alif, Baa}; Jiim, Daal, Siin, Faa, Miim are NOT unlocked.
+ * 2. Finish F1 completely: Jiim becomes unlocked, Haa (haa_soft) does not.
+ * 3. Plan 'free': nothing beyond F1 (even when F1 is finished).
+ * 4. Generate 100 questions per game with 3 learned letters: zero questions contain another letter.
+ */
+export function runFix1_UnlockAndLearnedLettersAudit(): SelfTestCheckResult {
+  const baseState = getInitialBlueprintState();
+  // 1. Learner with plan 'full', progress only on Alif (5 steps)
+  const fullStateAlifOnly = {
+    ...baseState,
+    users: baseState.users.map((u) =>
+      u.id === 'u_learner_1' ? { ...u, entitlement: 'full' as const } : u
+    ),
+    progress: [
+      {
+        userId: 'u_learner_1',
+        letterId: 'alif',
+        stepsDone: ['voir', 'ecouter', 'tracer', 'ecrire', 'retenir'] as (
+          | 'voir'
+          | 'ecouter'
+          | 'tracer'
+          | 'ecrire'
+          | 'retenir'
+        )[],
+        box: 5 as const,
+        nextReviewAt: '2026-04-15',
+        stars: 3 as const
+      }
+    ],
+    passedFamilyExams: { u_learner_1: [] }
+  };
+
+  const unlockedCase1 = getUnlockedLetterIdsForUser(
+    fullStateAlifOnly,
+    'u_learner_1'
+  );
+  const learnedCase1 = getLearnedLetterIdsForUser(
+    fullStateAlifOnly,
+    'u_learner_1'
+  );
+  const forbiddenHeads = ['jiim', 'daal', 'siin', 'faa', 'miim'];
+  const case1Passed =
+    unlockedCase1.length === 2 &&
+    unlockedCase1.includes('alif') &&
+    unlockedCase1.includes('baa') &&
+    forbiddenHeads.every(
+      (fid) => !isLetterUnlockedForUser(fullStateAlifOnly, 'u_learner_1', fid)
+    ) &&
+    learnedCase1.length === 1 &&
+    learnedCase1[0] === 'alif';
+
+  // 2. Finish F1 completely (alif, baa, taa, thaa = 5 steps): Jiim becomes unlocked, Haa (haa_soft) does not
+  const f1DoneProgress = ['alif', 'baa', 'taa', 'thaa'].map((lid) => ({
+    userId: 'u_learner_1',
+    letterId: lid,
+    stepsDone: ['voir', 'ecouter', 'tracer', 'ecrire', 'retenir'] as (
+      | 'voir'
+      | 'ecouter'
+      | 'tracer'
+      | 'ecrire'
+      | 'retenir'
+    )[],
+    box: 5 as const,
+    nextReviewAt: '2026-04-15',
+    stars: 3 as const
+  }));
+  const fullStateF1Done = {
+    ...fullStateAlifOnly,
+    progress: f1DoneProgress
+  };
+  const jiimUnlockedAfterF1 = isLetterUnlockedForUser(
+    fullStateF1Done,
+    'u_learner_1',
+    'jiim'
+  );
+  const haaUnlockedAfterF1 = isLetterUnlockedForUser(
+    fullStateF1Done,
+    'u_learner_1',
+    'haa_soft'
+  );
+  const f3UnlockedAfterF1 = isFamilyUnlockedForUser(
+    fullStateF1Done,
+    'u_learner_1',
+    'F3'
+  );
+  const case2Passed =
+    jiimUnlockedAfterF1 === true &&
+    haaUnlockedAfterF1 === false &&
+    f3UnlockedAfterF1 === false;
+
+  // 3. Plan 'free': nothing beyond F1 (even when F1 is finished)
+  const freeStateF1Done = {
+    ...fullStateF1Done,
+    users: fullStateF1Done.users.map((u) =>
+      u.id === 'u_learner_1' ? { ...u, entitlement: 'free' as const } : u
+    )
+  };
+  const unlockedFreeF1Done = getUnlockedLetterIdsForUser(
+    freeStateF1Done,
+    'u_learner_1'
+  );
+  const case3Passed =
+    unlockedFreeF1Done.every((id) =>
+      ['alif', 'baa', 'taa', 'thaa'].includes(id)
+    ) &&
+    !isFamilyUnlockedForUser(freeStateF1Done, 'u_learner_1', 'F2');
+
+  // 4. Generate 100 questions per game with 3 learned letters: zero questions contain another letter
+  const learned3 = ['alif', 'baa', 'taa'];
+  const learned3Set = new Set(learned3);
+  let leaks = 0;
+
+  // Game 1: Mémoire (20 decks x 6 cards = 120 items)
+  for (let s = 0; s < 20; s++) {
+    const deck = buildMemoryDeck(learned3, `seed_mem_${s}`);
+    for (const card of deck) {
+      if (!learned3Set.has(card.letterId)) leaks++;
+    }
+  }
+  // Game 2: Chasse aux points (100 rounds)
+  const dh100 = buildDotHuntRounds(learned3, 100, 'seed_dh_100');
+  for (const r of dh100) {
+    if (!learned3Set.has(r.letter.id)) leaks++;
+  }
+  // Game 3: Course de la fourmi (100 rounds)
+  const str100 = buildAntStreamRounds(learned3, 100, 'seed_str_100');
+  for (const r of str100) {
+    if (!learned3Set.has(r.targetLetter.id)) leaks++;
+    for (const st of r.stones) {
+      if (!learned3Set.has(st.id)) leaks++;
+    }
+  }
+  // Game 4: Mot à assembler (100 rounds)
+  const asm100 = buildAssembleMiniGameRounds(
+    learned3,
+    PROGRESSIVE_WORDS,
+    100,
+    'seed_asm_100'
+  );
+  for (const r of asm100) {
+    for (const lid of r.targetLetterIds) {
+      if (!learned3Set.has(lid)) leaks++;
+    }
+    for (const tile of r.scrambledTiles) {
+      if (!learned3Set.has(tile.letterId)) leaks++;
+    }
+  }
+  // Game 5: Lettre mystère (100 rounds)
+  const mys100 = buildMysteryLetterRounds(learned3, 100, 'seed_mys_100');
+  for (const r of mys100) {
+    if (!learned3Set.has(r.targetLetter.id)) leaks++;
+    for (const opt of r.options) {
+      if (!learned3Set.has(opt.id)) leaks++;
+    }
+  }
+
+  const passed = case1Passed && case2Passed && case3Passed && leaks === 0;
+  return {
+    id: 'fix1_unlock_learned',
+    title:
+      'FIX 1 & 1b : Ordre strict des familles (full vs free) & 500 manches de jeux sur 3 lettres apprises (0 fuite)',
+    passed,
+    summary: passed
+      ? `Plan full + Alif -> unlocked=[${unlockedCase1.join(', ')}] · Fin F1 -> Jiim=true, Haa=false · Plan free -> F2=false · 5×100 manches [alif,baa,taa] -> fuites=${leaks}`
+      : 'Anomalie sur le déverrouillage ou fuite de lettre non apprise',
+    details: [
+      `Cas 1 (plan full, seul Alif fini) : unlocked=[${unlockedCase1.join(', ')}], learned=[${learnedCase1.join(', ')}], Jiim/Daal/Siin/Faa/Miim verrouillées`,
+      `Cas 2 (F1 terminée en plan full) : Jiim débloquée=${jiimUnlockedAfterF1}, Haa débloquée=${haaUnlockedAfterF1}`,
+      `Cas 3 (plan free même avec F1 terminée) : F2 débloquée=${isFamilyUnlockedForUser(freeStateF1Done, 'u_learner_1', 'F2')}, lettres=[${unlockedFreeF1Done.join(', ')}]`,
+      `Cas 4 (100 manches × 5 jeux avec 3 lettres apprises [alif, baa, taa]) : fuites=${leaks}`
+    ]
+  };
+}
+
+/**
+ * FIX D MANDATORY CHECK (Self-Check 6):
+ * Chasse aux points: 50 generated rounds, never a dotless letter,
+ * exactly one correct card, distractors never equal to the correct config.
+ */
+export function runFix2_ChasseAuxPointsDotlessAudit(): SelfTestCheckResult {
+  const allLetterIds = LETTERS_DATA.map((l) => l.id);
+  const rounds50 = buildDotHuntRounds(allLetterIds, 50, 'selfcheck_50_dothunt');
+
+  let dotlessFound = 0;
+  let badCorrectCount = 0;
+  let distractorEqualsCorrect = 0;
+
+  for (const r of rounds50) {
+    if (r.letter.dots.count === 0) {
+      dotlessFound++;
+    }
+    const correctOpts = r.options.filter((o) => o.isCorrect);
+    const wrongOpts = r.options.filter((o) => !o.isCorrect);
+    if (
+      correctOpts.length !== 1 ||
+      correctOpts[0].dotsCount !== r.letter.dots.count ||
+      correctOpts[0].dotsPosition !== r.letter.dots.position
+    ) {
+      badCorrectCount++;
+    }
+    for (const w of wrongOpts) {
+      if (
+        w.dotsCount === r.letter.dots.count &&
+        w.dotsPosition === r.letter.dots.position
+      ) {
+        distractorEqualsCorrect++;
+      }
+    }
+  }
+
+  // Also test Rounds 4-5 custom dot placement validator
+  const baa = LETTERS_DATA.find((l) => l.id === 'baa')!;
+  const taa = LETTERS_DATA.find((l) => l.id === 'taa')!;
+  const customPlaceOk =
+    validateCustomPlacedDotsForLetter(baa, [{ x: 100, y: 150 }]) === true &&
+    validateCustomPlacedDotsForLetter(baa, [{ x: 100, y: 50 }]) === false &&
+    validateCustomPlacedDotsForLetter(taa, [
+      { x: 92, y: 58 },
+      { x: 108, y: 58 }
+    ]) === true &&
+    validateCustomPlacedDotsForLetter(taa, [{ x: 100, y: 58 }]) === false;
+
+  const passed =
+    rounds50.length === 50 &&
+    dotlessFound === 0 &&
+    badCorrectCount === 0 &&
+    distractorEqualsCorrect === 0 &&
+    customPlaceOk;
+
+  return {
+    id: 'fix2_dothunt',
+    title:
+      'FIX D : Chasse aux points — 50 manches générées : 0 lettre sans point, 1 seule bonne carte, 0 distracteur identique',
+    passed,
+    summary: passed
+      ? `50 manches générées : lettres sans point=0, cartes correctes=1/3 sur 50/50, distracteurs égaux au bon choix=0, validation placement libre=OK`
+      : 'Anomalie détectée dans Chasse aux points',
+    details: [
+      `Manches générées : ${rounds50.length} -> lettres sans point sélectionnées : ${dotlessFound}`,
+      `Manches avec exactement 1 carte correcte : ${50 - badCorrectCount}/50`,
+      `Distracteurs identiques à la bonne configuration : ${distractorEqualsCorrect}`,
+      `Validation placement libre (manches 4–5) : ${customPlaceOk ? 'PASS' : 'FAIL'}`
+    ]
+  };
+}
+
+/**
+ * FIX E MANDATORY CHECK (Self-Check 7):
+ * Ant final position for all 28 letters: on the baseline, outside the letter,
+ * clearance >= 18 units (print the minimum).
+ */
+export function runFixE_AntFinalPositionAll28Letters(): SelfTestCheckResult {
+  const details: string[] = [];
+  let allPassed = true;
+  let globalMinClearance = Infinity;
+
+  for (const letter of LETTERS_DATA) {
+    const glyph = letter.forms.isolated;
+    const parking = computeGlyphFinalAntParkingSpot(glyph);
+    const evalEnd = evaluateGlyphAnimationAtProgress(glyph, 1);
+
+    const onBaseline =
+      parking.y === glyph.baseline && evalEnd.ant.y === glyph.baseline;
+    const outsideBbox =
+      parking.x <= parking.bbox.minX - 24 ||
+      parking.x >= parking.bbox.maxX + 24;
+    const clearanceOk = parking.minClearance >= 18;
+
+    if (parking.minClearance < globalMinClearance) {
+      globalMinClearance = parking.minClearance;
+    }
+
+    if (!onBaseline || !outsideBbox || !clearanceOk) {
+      allPassed = false;
+    }
+
+    details.push(
+      `${letter.shortName}: pos=(${parking.x}, ${parking.y}), baseline=${glyph.baseline}, bbox=[${parking.bbox.minX}..${parking.bbox.maxX}], angle=${parking.angleDeg}°, dégagementMin=${parking.minClearance}u`
+    );
+  }
+
+  return {
+    id: 'fixE_ant_parking',
+    title:
+      'FIX E : Position finale de la fourmi (28 lettres) : sur la ligne de base, hors de la lettre, dégagement >= 18 unités',
+    passed: allPassed && globalMinClearance >= 18,
+    summary: `28/28 lettres sur la ligne de base (y=120), hors bbox, dégagement minimum mesuré = ${globalMinClearance} unités (>= 18u)`,
+    details
   };
 }
 

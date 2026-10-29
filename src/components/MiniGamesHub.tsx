@@ -5,6 +5,8 @@ import {
   Star,
   RotateCcw,
   Hand,
+  Check,
+  Info,
 } from 'lucide-react';
 import { LearnerMode } from '../data/copyDeck';
 import {
@@ -19,8 +21,11 @@ import {
 } from '../data/lettersAndFamilies';
 import {
   GlyphBodyStroke,
+  GlyphDotStroke,
+  Point2D,
+  computeDotCoordinatesForBodyConfig,
   getDotRectSide,
-  snapTapToTargetDot,
+  sampleSvgPathEqualLength,
 } from '../lib/strokeMath';
 import { speechService } from '../services/speech';
 import {
@@ -52,7 +57,7 @@ export const MINI_GAMES_CATALOG: {
   {
     id: 'chasse_points',
     titleFr: 'Chasse aux points',
-    subtitleFr: 'Glisse les points sur la lettre',
+    subtitleFr: 'Trouve et place les points de la lettre',
     emoji: '🎯',
   },
   {
@@ -146,6 +151,7 @@ function pickWeightedUnlockedLetter(
 export interface AssembleRound {
   id: string;
   promptFr: string;
+  translationFr: string;
   picture: string;
   targetAr: string;
   targetLetterIds: string[];
@@ -173,7 +179,10 @@ export function buildAssembleMiniGameRounds(
 
   for (let i = 0; i < roundsCount; i++) {
     if (i < validWords.length) {
-      const w = validWords[(i + Math.floor(rng() * validWords.length)) % validWords.length];
+      const w =
+        validWords[
+          (i + Math.floor(rng() * validWords.length)) % validWords.length
+        ];
       const rawTileIds = splitArabicWordIntoLetterTiles(w.textAr)
         .map((t) => t.letterId)
         .filter((id) => allowedSet.has(id));
@@ -200,6 +209,7 @@ export function buildAssembleMiniGameRounds(
       rounds.push({
         id: `asm_${i}_${w.id}`,
         promptFr: `Assemble « ${w.translationFr} »`,
+        translationFr: w.translationFr,
         picture: w.picture || '📖',
         targetAr: w.textAr,
         targetLetterIds,
@@ -219,6 +229,7 @@ export function buildAssembleMiniGameRounds(
       rounds.push({
         id: `asm_combo_${i}`,
         promptFr: `Assemble ${l1.shortName} + ${l2.shortName}`,
+        translationFr: `${l1.shortName} + ${l2.shortName}`,
         picture: l1.picture || '✨',
         targetAr: `${l1.arabicChar}${l2.arabicChar}`,
         targetLetterIds: seq.map((l) => l.id),
@@ -240,10 +251,37 @@ export interface DotHuntOption {
 
 export interface DotHuntRound {
   id: string;
+  roundKind: 'choose_card' | 'place_dots';
   letter: LetterRecord;
   options: DotHuntOption[];
 }
 
+export function getDotHuntPromptForLetter(
+  letter: LetterRecord,
+  roundIdx = 0
+): {
+  promptFr: string;
+  showDragToken: boolean;
+} {
+  if (roundIdx >= 3) {
+    return {
+      promptFr: `Place les points de « ${letter.shortName} »`,
+      showDragToken: false,
+    };
+  }
+  return {
+    promptFr: `Où sont les points de « ${letter.shortName} » ?`,
+    showDragToken: false,
+  };
+}
+
+/**
+ * FIX D: Redesign "Chasse aux points"
+ * - Pool: ONLY learned letters that HAVE dots (letter.dots.count > 0). Never selects a dotless letter.
+ * - Rounds 1-3 (roundIdx 0..2): 'choose_card' — 3 big stacked cards (90px high), each the REAL letter body
+ *   with a different dot configuration (count 0-3, above or below). Exactly 1 correct; distractors never equal to correct.
+ * - Rounds 4-5 (roundIdx 3..4): 'place_dots' — "Place les points toi-même".
+ */
 export function buildDotHuntRounds(
   unlockedLetterIds: string[],
   roundsCount = 5,
@@ -251,8 +289,14 @@ export function buildDotHuntRounds(
   mistakeWeights: Record<string, number> = {}
 ): DotHuntRound[] {
   const allowedSet = new Set(unlockedLetterIds);
-  const unlockedLetters = LETTERS_DATA.filter((l) => allowedSet.has(l.id));
-  if (unlockedLetters.length === 0) return [];
+  const learnedDotted = LETTERS_DATA.filter(
+    (l) => allowedSet.has(l.id) && l.dots.count > 0
+  );
+  // Fallback to canonical dotted letters if caller passed fewer than 2 dotted letters
+  const dottedPool =
+    learnedDotted.length >= 2
+      ? learnedDotted
+      : LETTERS_DATA.filter((l) => l.dots.count > 0).slice(0, 3);
 
   const rng = createSeededRng(`dothunt_${seedStr}`);
   const allConfigs: {
@@ -266,6 +310,7 @@ export function buildDotHuntRounds(
     { dotsCount: 2, dotsPosition: 'above', labelFr: '2 points dessus' },
     { dotsCount: 3, dotsPosition: 'above', labelFr: '3 points dessus' },
     { dotsCount: 2, dotsPosition: 'below', labelFr: '2 points dessous' },
+    { dotsCount: 3, dotsPosition: 'below', labelFr: '3 points dessous' },
   ];
 
   const rounds: DotHuntRound[] = [];
@@ -274,7 +319,7 @@ export function buildDotHuntRounds(
 
   for (let i = 0; i < roundsCount; i++) {
     const letter = pickWeightedUnlockedLetter(
-      unlockedLetters,
+      dottedPool,
       rng,
       mistakeWeights,
       recentKeys,
@@ -287,17 +332,32 @@ export function buildDotHuntRounds(
         (c) =>
           c.dotsCount === letter.dots.count &&
           c.dotsPosition === letter.dots.position
-      ) || allConfigs[0];
+      ) || {
+        dotsCount: letter.dots.count as 1 | 2 | 3,
+        dotsPosition: letter.dots.position,
+        labelFr: `${letter.dots.count} point(s)`,
+      };
 
-    const wrongCfgs = allConfigs
-      .filter(
-        (c) =>
+    // Distractors are ALWAYS wrong variants of the same body, distinct from each other
+    const candidateWrong = allConfigs.filter(
+      (c) =>
+        !(
+          c.dotsCount === correctCfg.dotsCount &&
+          c.dotsPosition === correctCfg.dotsPosition
+        )
+    );
+    const offset = Math.floor(rng() * candidateWrong.length);
+    const wrong1 = candidateWrong[offset % candidateWrong.length];
+    const wrong2 =
+      candidateWrong.find(
+        (c, idx) =>
+          idx !== offset % candidateWrong.length &&
           !(
-            c.dotsCount === correctCfg.dotsCount &&
-            c.dotsPosition === correctCfg.dotsPosition
+            c.dotsCount === wrong1.dotsCount &&
+            c.dotsPosition === wrong1.dotsPosition
           )
-      )
-      .slice(0, 2);
+      ) || candidateWrong[(offset + 1) % candidateWrong.length];
+    const wrongCfgs = [wrong1, wrong2];
 
     const optCount = 3;
     let targetSlot = Math.floor(rng() * optCount);
@@ -333,12 +393,76 @@ export function buildDotHuntRounds(
 
     rounds.push({
       id: `dothunt_${i}_${letter.id}`,
+      roundKind: i < 3 ? 'choose_card' : 'place_dots',
       letter,
       options,
     });
   }
 
   return rounds;
+}
+
+/**
+ * FIX D (Rounds 4-5): Validates learner-placed custom dots for a dotted letter.
+ * Count must equal letter.dots.count AND every dot must be on the correct side (above or below the body)
+ * within a generous horizontal tolerance.
+ */
+export function validateCustomPlacedDotsForLetter(
+  letter: LetterRecord,
+  placedDots: Point2D[]
+): boolean {
+  if (placedDots.length !== letter.dots.count) {
+    return false;
+  }
+  const glyph = letter.forms.isolated;
+  const bodyStrokes = glyph.strokes.filter(
+    (s): s is GlyphBodyStroke => s.kind === 'body'
+  );
+  const dotStrokes = glyph.strokes.filter(
+    (s): s is GlyphDotStroke => s.kind === 'dot'
+  );
+
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const bs of bodyStrokes) {
+    const pts = sampleSvgPathEqualLength(bs.d, 32);
+    for (const pt of pts) {
+      if (pt.x < minX) minX = pt.x;
+      if (pt.x > maxX) maxX = pt.x;
+      if (pt.y < minY) minY = pt.y;
+      if (pt.y > maxY) maxY = pt.y;
+    }
+  }
+  if (!Number.isFinite(minX)) {
+    minX = 60;
+    maxX = 140;
+    minY = 60;
+    maxY = 120;
+  }
+  const midY = (minY + maxY) / 2;
+
+  return placedDots.every((d) => {
+    // Check if within generous proximity of any real target dot
+    const nearTarget = dotStrokes.some(
+      (td) => Math.hypot(d.x - td.at[0], d.y - td.at[1]) <= 46
+    );
+    if (nearTarget) return true;
+
+    // Generous horizontal tolerance around the body
+    const horizOk =
+      d.x >= Math.min(18, minX - 48) && d.x <= Math.max(182, maxX + 48);
+    if (!horizOk) return false;
+
+    if (letter.dots.position === 'above') {
+      return d.y <= midY + 14;
+    }
+    if (letter.dots.position === 'below') {
+      return d.y >= midY - 14;
+    }
+    return false;
+  });
 }
 
 export interface AntStreamRound {
@@ -523,8 +647,26 @@ export function buildMemoryDeck(
   );
 }
 
+export interface RoundAnswerDisplay {
+  arabicText: string;
+  labelFr: string;
+  picture: string;
+  wordAr?: string;
+  wordFr?: string;
+}
+
+function makeAnswerDisplayFromLetter(l: LetterRecord): RoundAnswerDisplay {
+  return {
+    arabicText: l.arabicChar,
+    labelFr: l.shortName,
+    picture: l.picture,
+    wordAr: l.keyword,
+    wordFr: l.keywordFr,
+  };
+}
+
 // ============================================================================
-// INTERACTIVE MINI-GAME RUNNER COMPONENT (PHASE C3 & PHASE F)
+// INTERACTIVE MINI-GAME RUNNER COMPONENT (FIX C & FIX D)
 // ============================================================================
 
 export function MiniGamePlayView({
@@ -546,12 +688,35 @@ export function MiniGamePlayView({
   onFinishGame: (earnedStars: 1 | 2 | 3, gameId: MiniGameId) => void;
   onSwitchGame?: (nextGameId: MiniGameId) => void;
 }) {
-  const [internalSessionCounter, setInternalSessionCounter] = useState<number>(1);
+  const [internalSessionCounter, setInternalSessionCounter] =
+    useState<number>(1);
   const effectiveSeed =
     sessionSeed ||
     `${new Date().toISOString().slice(0, 10)}_s${internalSessionCounter}`;
 
+  // FIX D: Pool for Chasse aux points uses ONLY learned letters that HAVE dots (dots.count > 0).
+  // If fewer than 2 such letters are learned, use "Mémoire" instead and show banner.
+  const learnedDottedLetters = React.useMemo(() => {
+    const allowedSet = new Set(unlockedLetterIds);
+    return LETTERS_DATA.filter(
+      (l) => allowedSet.has(l.id) && l.dots.count > 0
+    );
+  }, [unlockedLetterIds]);
+
+  const isDotHuntFallbackToMemoire =
+    gameId === 'chasse_points' && learnedDottedLetters.length < 2;
+  const effectiveGameId: MiniGameId = isDotHuntFallbackToMemoire
+    ? 'memoire'
+    : gameId;
+
   const [roundIdx, setRoundIdx] = useState<number>(0);
+  // FIX C: roundState ('playing' | 'won') and revealedAnswer
+  const [roundState, setRoundState] = useState<'playing' | 'won'>('playing');
+  const [roundOutcome, setRoundOutcome] = useState<'won' | 'revealed'>('won');
+  const [roundMistakes, setRoundMistakes] = useState<number>(0);
+  const [revealedAnswer, setRevealedAnswer] =
+    useState<RoundAnswerDisplay | null>(null);
+
   const [combo, setCombo] = useState<number>(0);
   const [maxCombo, setMaxCombo] = useState<number>(0);
   const [mistakes, setMistakes] = useState<number>(0);
@@ -566,25 +731,25 @@ export function MiniGamePlayView({
   // Game 1: Mémoire state
   const memoryDeck = React.useMemo(
     () => buildMemoryDeck(unlockedLetterIds, effectiveSeed),
-    [unlockedLetterIds, gameId, effectiveSeed]
+    [unlockedLetterIds, effectiveGameId, effectiveSeed]
   );
   const [flippedCardIds, setFlippedCardIds] = useState<string[]>([]);
   const [matchedCardIds, setMatchedCardIds] = useState<string[]>([]);
 
-  // Game 2: Chasse aux points state (DRAG diamond dots onto the letter + option buttons)
+  // Game 2: Chasse aux points state (Fix D: Rounds 1-3 card choice, Rounds 4-5 tap to place dots + Valider)
   const dotHuntRounds = React.useMemo(
     () =>
       buildDotHuntRounds(unlockedLetterIds, 5, effectiveSeed, mistakeWeights),
     [unlockedLetterIds, effectiveSeed, mistakeWeights]
   );
-  const [snappedDotIndices, setSnappedDotIndices] = useState<number[]>([]);
-  const [draggingDotOffset, setDraggingDotOffset] = useState<{
-    x: number;
-    y: number;
-  } | null>(null);
-  const dotHuntSvgRef = useRef<SVGSVGElement | null>(null);
+  const [selectedDotCardId, setSelectedDotCardId] = useState<string | null>(
+    null
+  );
+  const [placedCustomDots, setPlacedCustomDots] = useState<Point2D[]>([]);
+  const [showCorrectDotsOverlay, setShowCorrectDotsOverlay] =
+    useState<boolean>(false);
 
-  // Game 3: Course de la fourmi state (real parabolic hop arc)
+  // Game 3: Course de la fourmi state (real parabolic hop arc + timer before validation panel)
   const streamRounds = React.useMemo(
     () =>
       buildAntStreamRounds(unlockedLetterIds, 5, effectiveSeed, mistakeWeights),
@@ -594,8 +759,10 @@ export function MiniGamePlayView({
   const [antHopArcStoneIdx, setAntHopArcStoneIdx] = useState<number | null>(
     null
   );
+  const [isHopping, setIsHopping] = useState<boolean>(false);
+  const hopTimerRef = useRef<number | null>(null);
 
-  // Game 4: Mot à assembler state (drag or tap tiles with snapping & bounce on success)
+  // Game 4: Mot à assembler state
   const assembleRounds = React.useMemo(
     () =>
       buildAssembleMiniGameRounds(unlockedLetterIds, words, 5, effectiveSeed),
@@ -604,7 +771,7 @@ export function MiniGamePlayView({
   const [pickedTileIds, setPickedTileIds] = useState<string[]>([]);
   const [wordBounceSuccess, setWordBounceSuccess] = useState<boolean>(false);
 
-  // Game 5: Lettre mystère state (swipe/hold across canvas to reveal strokes; fewer reveals = more stars)
+  // Game 5: Lettre mystère state
   const mysteryRounds = React.useMemo(
     () =>
       buildMysteryLetterRounds(
@@ -620,19 +787,29 @@ export function MiniGamePlayView({
   const lastSwipeRevealTsRef = useRef<number>(0);
 
   useEffect(() => {
+    if (hopTimerRef.current) {
+      window.clearTimeout(hopTimerRef.current);
+      hopTimerRef.current = null;
+    }
     setRoundIdx(0);
+    setRoundState('playing');
+    setRoundOutcome('won');
+    setRoundMistakes(0);
+    setRevealedAnswer(null);
     setCombo(0);
     setMaxCombo(0);
     setMistakes(0);
     setGameCompleted(false);
     setFlippedCardIds([]);
     setMatchedCardIds([]);
-    setSnappedDotIndices([]);
-    setDraggingDotOffset(null);
+    setSelectedDotCardId(null);
+    setPlacedCustomDots([]);
+    setShowCorrectDotsOverlay(false);
     setPickedTileIds([]);
     setWordBounceSuccess(false);
     setWobbleStoneId(null);
     setAntHopArcStoneIdx(null);
+    setIsHopping(false);
     setRevealedStrokeStage(1);
     setTotalExtraRevealsUsed(0);
     setMascotPose('think');
@@ -640,7 +817,20 @@ export function MiniGamePlayView({
     setInternalSessionCounter((c) => c + 1);
   }, [gameId]);
 
-  const recordRoundWin = () => {
+  useEffect(() => {
+    return () => {
+      if (hopTimerRef.current) {
+        window.clearTimeout(hopTimerRef.current);
+      }
+    };
+  }, []);
+
+  /**
+   * FIX C (1, 2, 3, 7):
+   * recordRoundWin sets roundState = 'won' and does NOT change roundIdx.
+   * Input is locked while 'won'. Only clicking "Continuer" / "Voir mon résultat" advances.
+   */
+  const recordRoundWin = (answerDisplay: RoundAnswerDisplay) => {
     speechService.triggerSuccessFeedback('step_ok');
     const nextCombo = combo + 1;
     setCombo(nextCombo);
@@ -654,25 +844,26 @@ export function MiniGamePlayView({
       pickNextNonRepeatingFeedback(POSITIVE_FEEDBACK_VARIANTS, prev, nextCount)
     );
 
-    if (roundIdx + 1 >= 5) {
-      setGameCompleted(true);
-      speechService.triggerSuccessFeedback('letter_done');
-    } else {
-      setRoundIdx((r) => r + 1);
-      setSnappedDotIndices([]);
-      setDraggingDotOffset(null);
-      setPickedTileIds([]);
-      setWordBounceSuccess(false);
-      setWobbleStoneId(null);
-      setAntHopArcStoneIdx(null);
-      setRevealedStrokeStage(1);
-    }
+    setRevealedAnswer(answerDisplay);
+    setRoundOutcome('won');
+    setRoundState('won');
   };
 
-  const recordMistake = () => {
+  /**
+   * FIX C (4):
+   * Wrong answer: keep the red message and let the player retry.
+   * After 2 mistakes in the same round show the correct answer in the panel
+   * (neutral colour, "Voici la réponse") with the same "Continuer" button.
+   */
+  const recordMistake = (
+    answerDisplay: RoundAnswerDisplay,
+    onRevealAfterTwoMistakes?: () => void
+  ) => {
     speechService.triggerHaptic('error');
     setCombo(0);
     setMistakes((m) => m + 1);
+    const nextRoundMistakes = roundMistakes + 1;
+    setRoundMistakes(nextRoundMistakes);
     setMascotPose('oops');
 
     const nextCount = stepFeedbackCounter + 1;
@@ -681,10 +872,52 @@ export function MiniGamePlayView({
     setFeedbackSentence((prev) =>
       pickNextNonRepeatingFeedback(RETRY_FEEDBACK_VARIANTS, prev, nextCount)
     );
+
+    if (nextRoundMistakes >= 2) {
+      onRevealAfterTwoMistakes?.();
+      setRevealedAnswer(answerDisplay);
+      setRoundOutcome('revealed');
+      setRoundState('won');
+    }
+  };
+
+  const isFinalRoundInGame =
+    effectiveGameId === 'memoire'
+      ? matchedCardIds.length >= memoryDeck.length || roundIdx >= 2
+      : roundIdx >= 4;
+
+  const handleContinueAfterValidation = () => {
+    if (roundState !== 'won') return;
+    speechService.triggerHaptic('stroke_ok');
+
+    if (isFinalRoundInGame) {
+      setRoundState('playing');
+      setGameCompleted(true);
+      speechService.triggerSuccessFeedback('letter_done');
+      return;
+    }
+
+    setRoundIdx((r) => r + 1);
+    setRoundState('playing');
+    setRoundOutcome('won');
+    setRoundMistakes(0);
+    setRevealedAnswer(null);
+    setFeedbackSentence(null);
+    setMascotPose('think');
+    setFlippedCardIds([]);
+    setSelectedDotCardId(null);
+    setPlacedCustomDots([]);
+    setShowCorrectDotsOverlay(false);
+    setPickedTileIds([]);
+    setWordBounceSuccess(false);
+    setWobbleStoneId(null);
+    setAntHopArcStoneIdx(null);
+    setIsHopping(false);
+    setRevealedStrokeStage(1);
   };
 
   const earnedStars: 1 | 2 | 3 =
-    gameId === 'lettre_mystere'
+    effectiveGameId === 'lettre_mystere'
       ? mistakes === 0 && totalExtraRevealsUsed <= 1
         ? 3
         : mistakes <= 2 && totalExtraRevealsUsed <= 4
@@ -697,7 +930,30 @@ export function MiniGamePlayView({
       : 1;
 
   const gameMeta =
-    MINI_GAMES_CATALOG.find((g) => g.id === gameId) || MINI_GAMES_CATALOG[0];
+    MINI_GAMES_CATALOG.find((g) => g.id === effectiveGameId) ||
+    MINI_GAMES_CATALOG[0];
+
+  // FIX 1b: If fewer than 3 learned letters, show a card "Apprends d’abord 3 lettres" instead of a game
+  if (unlockedLetterIds.length < 3) {
+    return (
+      <div
+        data-testid="minigame-need-3-letters-card"
+        className="rounded-[22px] bg-[var(--paper)] border-2 border-[var(--line)] p-6 text-center space-y-3"
+      >
+        <div className="flex justify-center">
+          <Mascot pose="think" size={56} mode={mode} />
+        </div>
+        <h3 className="font-display text-[22px] text-[var(--ink)]">
+          Apprends d’abord 3 lettres
+        </h3>
+        <p className="text-[14px] text-[var(--ink)]/75 mx-auto">
+          Tu as appris {unlockedLetterIds.length} / 3 lettres. Découvre au moins
+          3 lettres (étapes Voir et Écouter) pour lancer les mini-jeux sans
+          jamais croiser une lettre inconnue.
+        </p>
+      </div>
+    );
+  }
 
   if (gameCompleted) {
     return (
@@ -722,13 +978,17 @@ export function MiniGamePlayView({
         </div>
 
         <div className="w-full space-y-2.5 pt-2">
-          <PrimaryButton onClick={() => onFinishGame(earnedStars, gameId)}>
+          <PrimaryButton
+            onClick={() => onFinishGame(earnedStars, effectiveGameId)}
+          >
             Récupérer mes étoiles
           </PrimaryButton>
           {onSwitchGame && (
             <SecondaryButton
               onClick={() =>
-                onSwitchGame(pickNextNonRepeatingGame(gameId, roundIdx + 1))
+                onSwitchGame(
+                  pickNextNonRepeatingGame(effectiveGameId, roundIdx + 1)
+                )
               }
             >
               Autre jeu
@@ -739,21 +999,38 @@ export function MiniGamePlayView({
     );
   }
 
+  const inputLocked = roundState === 'won' || isHopping;
+
   return (
     <div
-      data-testid={`minigame-container-${gameId}`}
-      className="flex flex-col gap-3.5"
+      data-testid={`minigame-container-${effectiveGameId}`}
+      data-round-idx={roundIdx}
+      data-round-state={roundState}
+      className="flex flex-col gap-3"
     >
+      {/* FIX D: Fallback notice when fewer than 2 dotted letters are learned */}
+      {isDotHuntFallbackToMemoire && (
+        <div
+          data-testid="dothunt-fallback-banner"
+          className="px-3.5 py-2.5 rounded-[14px] bg-[var(--accent)]/20 border border-[var(--accent)] text-[13px] font-bold text-[var(--ink)] text-center"
+        >
+          Apprends Baa, Taa ou Thaa pour jouer à Chasse aux points
+        </div>
+      )}
+
       {/* Top HUD: Round 1..5 + Flame Combo Counter + Ant Reaction */}
       <div className="flex items-center justify-between gap-2">
-        <span className="font-mono-tag text-[12px] font-bold text-[var(--brand)]">
-          {gameId === 'memoire'
+        <span
+          data-testid="minigame-round-counter"
+          className="font-mono-tag text-[12px] font-bold text-[var(--brand)]"
+        >
+          {effectiveGameId === 'memoire'
             ? `PAIRES ${matchedCardIds.length / 2}/3`
             : `MANCHE ${roundIdx + 1}/5`}
         </span>
 
         <div className="flex items-center gap-2">
-          {mode === 'kids' && (
+          {mode === 'kids' && roundState === 'playing' && (
             <Mascot pose={mascotPose} size={36} mode={mode} />
           )}
           <div
@@ -766,35 +1043,32 @@ export function MiniGamePlayView({
         </div>
       </div>
 
-      {/* Non-repeating French feedback banner (3 variants) */}
-      {feedbackSentence && (
-        <div
-          data-testid="minigame-feedback-banner"
-          className={`px-3.5 py-2 rounded-[14px] text-center text-[13px] font-bold transition-all ${
-            feedbackTone === 'good'
-              ? 'bg-[var(--good)]/15 text-[var(--good)]'
-              : 'bg-[var(--bad)]/15 text-[var(--bad)]'
-          }`}
-        >
-          {feedbackSentence}
-        </div>
-      )}
+      {/* Red retry feedback banner while still playing */}
+      {roundState === 'playing' &&
+        feedbackSentence &&
+        feedbackTone === 'bad' && (
+          <div
+            data-testid="minigame-feedback-banner"
+            className="px-3.5 py-2 rounded-[14px] text-center text-[13px] font-bold bg-[var(--bad)]/15 text-[var(--bad)] transition-all"
+          >
+            {feedbackSentence}
+          </div>
+        )}
 
-      {/* 1. MÉMOIRE (flip with animation, matched pairs fly to the side tray) */}
-      {gameId === 'memoire' && (
+      {/* 1. MÉMOIRE (Fix C: keep cards visible when last pair is matched, show validation panel) */}
+      {effectiveGameId === 'memoire' && (
         <div className="space-y-3">
           <p className="text-[15px] font-semibold text-[var(--ink)] text-center">
             Retourne 2 cartes pour associer la lettre et son image repère.
           </p>
 
-          {/* Matched pairs tray on the side */}
           {matchedCardIds.length > 0 && (
             <div
               data-testid="memory-matched-side-tray"
               className="flex items-center justify-end gap-1.5 px-2.5 py-1.5 rounded-xl bg-[var(--good)]/10 border border-[var(--good)]/30"
             >
               <span className="text-[11px] font-mono-tag font-bold text-[var(--good)] mr-auto">
-                Paires rangées :
+                Paires trouvées :
               </span>
               {memoryDeck
                 .filter(
@@ -804,7 +1078,7 @@ export function MiniGamePlayView({
                 .map((c) => (
                   <span
                     key={c.cardId}
-                    className="px-2 py-0.5 rounded-lg bg-[var(--surface)] border border-[var(--good)] font-arabic text-base font-bold text-[var(--good)] animate-bounce"
+                    className="px-2 py-0.5 rounded-lg bg-[var(--surface)] border border-[var(--good)] font-arabic text-base font-bold text-[var(--good)]"
                   >
                     {c.display}
                   </span>
@@ -823,12 +1097,14 @@ export function MiniGamePlayView({
                 <button
                   key={card.cardId}
                   type="button"
+                  disabled={inputLocked}
                   data-testid={`memory-card-${card.cardId}`}
                   aria-label={
                     isFlipped ? `${card.subLabel}` : 'Carte mémoire retournée'
                   }
                   onClick={() => {
-                    if (isFlipped || flippedCardIds.length >= 2) return;
+                    if (inputLocked || isFlipped || flippedCardIds.length >= 2)
+                      return;
                     speechService.speakArabic(card.speechText);
                     const nextFlipped = [...flippedCardIds, card.cardId];
                     setFlippedCardIds(nextFlipped);
@@ -841,7 +1117,9 @@ export function MiniGamePlayView({
                         (c) => c.cardId === nextFlipped[1]
                       );
                       if (c1 && c2 && c1.letterId === c2.letterId) {
-                        speechService.triggerSuccessFeedback('stroke_ok');
+                        const matchedLetter =
+                          LETTERS_DATA.find((l) => l.id === c1.letterId) ||
+                          LETTERS_DATA[0];
                         const nextMatched = [
                           ...matchedCardIds,
                           c1.cardId,
@@ -849,41 +1127,42 @@ export function MiniGamePlayView({
                         ];
                         setMatchedCardIds(nextMatched);
                         setFlippedCardIds([]);
-                        const nextCombo = combo + 1;
-                        setCombo(nextCombo);
-                        setMaxCombo((m) => Math.max(m, nextCombo));
-                        setMascotPose('cheer');
-                        const nextCount = stepFeedbackCounter + 1;
-                        setStepFeedbackCounter(nextCount);
-                        setFeedbackTone('good');
-                        setFeedbackSentence((prev) =>
-                          pickNextNonRepeatingFeedback(
-                            POSITIVE_FEEDBACK_VARIANTS,
-                            prev,
-                            nextCount
-                          )
+                        recordRoundWin(
+                          makeAnswerDisplayFromLetter(matchedLetter)
                         );
-                        if (nextMatched.length >= memoryDeck.length) {
-                          setGameCompleted(true);
-                        }
                       } else {
-                        recordMistake();
+                        const targetLetterId =
+                          c1?.letterId ||
+                          memoryDeck.find(
+                            (mc) => !matchedCardIds.includes(mc.cardId)
+                          )?.letterId ||
+                          unlockedLetterIds[0];
+                        const targetLetter =
+                          LETTERS_DATA.find((l) => l.id === targetLetterId) ||
+                          LETTERS_DATA[0];
+
+                        recordMistake(
+                          makeAnswerDisplayFromLetter(targetLetter),
+                          () => {
+                            // Reveal the pair for targetLetter so the board stays consistent
+                            const pairCards = memoryDeck
+                              .filter((mc) => mc.letterId === targetLetter.id)
+                              .map((mc) => mc.cardId);
+                            setMatchedCardIds((prev) =>
+                              Array.from(new Set([...prev, ...pairCards]))
+                            );
+                            setFlippedCardIds([]);
+                          }
+                        );
                         window.setTimeout(() => {
                           setFlippedCardIds([]);
-                        }, 650);
+                        }, 550);
                       }
                     }
                   }}
-                  style={{
-                    transform: isMatched
-                      ? 'translateX(14px) scale(0.9)'
-                      : isFlipped
-                      ? 'rotateY(0deg) scale(1.02)'
-                      : 'rotateY(0deg) scale(1)',
-                  }}
-                  className={`min-h-[92px] rounded-[20px] border-2 p-2 flex flex-col items-center justify-center gap-1 pressable cursor-pointer transition-all duration-300 ${
+                  className={`min-h-[92px] rounded-[20px] border-2 p-2 flex flex-col items-center justify-center gap-1 pressable cursor-pointer transition-colors duration-200 ${
                     isMatched
-                      ? 'bg-[var(--good)]/15 border-[var(--good)] opacity-75'
+                      ? 'bg-[var(--good)]/15 border-[var(--good)]'
                       : isFlipped
                       ? 'bg-[var(--surface)] border-[var(--brand)] shadow-sm'
                       : 'bg-[var(--brand-deep)] text-white border-[var(--brand-deep)]'
@@ -918,8 +1197,13 @@ export function MiniGamePlayView({
         </div>
       )}
 
-      {/* 2. CHASSE AUX POINTS (DRAG diamond dots onto the letter, snapping to target places + option buttons) */}
-      {gameId === 'chasse_points' &&
+      {/* 2. CHASSE AUX POINTS — REDESIGNED (FIX D)
+          - Rounds 1-3 (roundIdx 0..2): "Choisis le bon point" — 3 big stacked cards (90px high),
+            each the REAL letter body with a different dot configuration (count 0-3, above or below)
+            computed from the body's bounding box with the clearance rule in strokeMath.
+          - Rounds 4-5 (roundIdx 3..4): "Place les points toi-même" — body shown with NO hints,
+            learner taps to place/remove dots, then presses "Valider". */}
+      {effectiveGameId === 'chasse_points' &&
         (() => {
           const r = dotHuntRounds[roundIdx] || dotHuntRounds[0];
           if (!r) return null;
@@ -927,52 +1211,43 @@ export function MiniGamePlayView({
           const bodyStrokes = glyph.strokes.filter(
             (s): s is GlyphBodyStroke => s.kind === 'body'
           );
-          const dotStrokes = glyph.strokes.filter((s) => s.kind === 'dot');
-          const dotSide = getDotRectSide(bodyStrokes[0]?.width ?? 15);
-          const targetPositions = dotStrokes.map((d) => d.at);
+          const dotStrokes = glyph.strokes.filter(
+            (s): s is GlyphDotStroke => s.kind === 'dot'
+          );
+          const dotSide = getDotRectSide(bodyStrokes[0]?.width ?? 14);
+          const promptInfo = getDotHuntPromptForLetter(r.letter, roundIdx);
+          const answerDisplay = makeAnswerDisplayFromLetter(r.letter);
 
-          const handleDropAtSvgCoord = (svgX: number, svgY: number) => {
-            if (dotStrokes.length === 0) {
-              recordRoundWin();
-              return;
-            }
-            const snap = snapTapToTargetDot(
-              { x: svgX, y: svgY },
-              dotStrokes,
-              28,
-              snappedDotIndices
-            );
-            if (snap.snapped && snap.targetId !== undefined) {
-              speechService.triggerHaptic('stroke_ok');
-              const nextSnapped = [...snappedDotIndices, snap.targetId];
-              setSnappedDotIndices(nextSnapped);
-              if (nextSnapped.length >= dotStrokes.length) {
-                recordRoundWin();
-              }
-            } else {
-              recordMistake();
-            }
-          };
-
-          const renderDotOptionSvg = (opt: DotHuntOption) => {
-            const dots: [number, number][] =
-              opt.dotsCount === 0
-                ? []
-                : opt.dotsCount === 1
-                ? [[100, opt.dotsPosition === 'below' ? 148 : 66]]
-                : opt.dotsCount === 2
-                ? [
-                    [90, opt.dotsPosition === 'below' ? 148 : 66],
-                    [110, opt.dotsPosition === 'below' ? 148 : 66],
-                  ]
-                : [
-                    [88, 68],
-                    [112, 68],
-                    [100, 52],
-                  ];
+          const renderBodyWithConfigDots = (
+            dotsCount: 0 | 1 | 2 | 3,
+            dotsPosition: 'above' | 'below' | 'none'
+          ) => {
+            // For the exact correct configuration, use the letter's authored clearance-enforced dotStrokes;
+            // for distractor configurations, compute from the body's bounding box with the clearance rule in strokeMath.
+            const coords: [number, number][] =
+              dotsCount === r.letter.dots.count &&
+              dotsPosition === r.letter.dots.position
+                ? dotStrokes.map((ds) => ds.at)
+                : computeDotCoordinatesForBodyConfig(
+                    glyph,
+                    dotsCount,
+                    dotsPosition
+                  );
 
             return (
-              <svg viewBox="0 0 200 200" className="w-14 h-14 shrink-0">
+              <svg
+                viewBox="0 0 200 200"
+                className="w-[74px] h-[74px] shrink-0 overflow-visible"
+              >
+                <line
+                  x1="20"
+                  y1={glyph.baseline}
+                  x2="180"
+                  y2={glyph.baseline}
+                  stroke="var(--line)"
+                  strokeWidth="1.5"
+                  strokeDasharray="4 4"
+                />
                 {bodyStrokes.map((bs) => (
                   <path
                     key={bs.id}
@@ -981,9 +1256,10 @@ export function MiniGamePlayView({
                     stroke="#07463D"
                     strokeWidth={bs.width}
                     strokeLinecap="round"
+                    strokeLinejoin="round"
                   />
                 ))}
-                {dots.map((pt, idx) => (
+                {coords.map((pt, idx) => (
                   <g
                     key={idx}
                     transform={`translate(${pt[0]}, ${pt[1]}) rotate(45)`}
@@ -993,8 +1269,10 @@ export function MiniGamePlayView({
                       y={-dotSide / 2}
                       width={dotSide}
                       height={dotSide}
-                      rx={1.5}
-                      fill="#FFB400"
+                      rx={1.6}
+                      fill="#07463D"
+                      stroke="#FFFFFF"
+                      strokeWidth="2"
                     />
                   </g>
                 ))}
@@ -1004,31 +1282,145 @@ export function MiniGamePlayView({
 
           return (
             <div className="space-y-3 text-center">
-              <div className="flex items-center justify-center gap-2">
-                <span className="text-[26px]" aria-hidden="true">
-                  {r.letter.picture}
-                </span>
-                <p className="text-[15px] font-bold text-[var(--ink)]">
-                  Glisse le point sur « {r.letter.shortName} » ou choisis la
-                  bonne configuration :
-                </p>
+              {/* Prompt + picture word */}
+              <div className="rounded-[18px] bg-[var(--paper)] border border-[var(--line)] px-3.5 py-2.5 flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2.5 min-w-0 text-left">
+                  <span
+                    className="text-[28px] leading-none shrink-0"
+                    aria-hidden="true"
+                  >
+                    {r.letter.picture}
+                  </span>
+                  <div className="min-w-0">
+                    <p
+                      data-testid="dothunt-prompt-text"
+                      className="text-[15px] font-bold text-[var(--ink)] leading-snug"
+                    >
+                      {promptInfo.promptFr}
+                    </p>
+                    <p className="text-[12px] font-medium text-[var(--ink)]/75 truncate">
+                      {r.letter.keywordFr} ·{' '}
+                      <span lang="ar" dir="rtl" className="font-arabic">
+                        {r.letter.keyword}
+                      </span>
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  aria-label={`Écouter ${r.letter.shortName}`}
+                  onClick={() => speechService.speakArabic(r.letter.speechText)}
+                  className="w-[48px] h-[48px] min-w-[48px] min-h-[48px] rounded-full bg-[var(--brand-deep)] text-white flex items-center justify-center pressable cursor-pointer shrink-0"
+                >
+                  <Volume2 className="w-5 h-5" />
+                </button>
               </div>
 
-              {/* Interactive Drag-and-Snap Letter Canvas */}
-              {targetPositions.length > 0 && (
-                <div className="flex items-center justify-center gap-3 bg-[var(--paper)] p-3 rounded-[20px] border border-[var(--line)]">
+              {r.roundKind === 'choose_card' ? (
+                /* ROUNDS 1-3: 3 big stacked cards (90px high), each the REAL letter body with a different dot configuration */
+                <div
+                  data-testid="dothunt-choose-cards-list"
+                  className="flex flex-col gap-2.5"
+                >
+                  {r.options.map((opt) => {
+                    const isSelected = selectedDotCardId === opt.id;
+                    let cardStyle =
+                      'bg-[var(--surface)] border-[var(--line)]';
+                    if (roundState === 'won') {
+                      if (opt.isCorrect) {
+                        cardStyle =
+                          'bg-[var(--good)]/15 border-[var(--good)]';
+                      } else if (isSelected) {
+                        cardStyle = 'bg-[var(--bad)]/15 border-[var(--bad)]';
+                      }
+                    } else if (isSelected) {
+                      cardStyle = 'bg-[var(--bad)]/10 border-[var(--bad)]';
+                    }
+
+                    return (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        disabled={inputLocked}
+                        data-testid={`dothunt-opt-${opt.id}`}
+                        data-is-correct={opt.isCorrect ? 'true' : 'false'}
+                        onClick={() => {
+                          if (inputLocked) return;
+                          setSelectedDotCardId(opt.id);
+                          if (opt.isCorrect) {
+                            recordRoundWin(answerDisplay);
+                          } else {
+                            recordMistake(answerDisplay);
+                          }
+                        }}
+                        className={`h-[90px] min-h-[90px] w-full rounded-[18px] border-2 px-4 flex items-center justify-between pressable cursor-pointer transition-all ${cardStyle}`}
+                      >
+                        <span className="text-[15px] font-bold text-[var(--ink)] text-left">
+                          {opt.labelFr}
+                        </span>
+                        {renderBodyWithConfigDots(
+                          opt.dotsCount,
+                          opt.dotsPosition
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : (
+                /* ROUNDS 4-5: "Place les points toi-même" — body shown with NO hints, tap to place/remove dots, then press "Valider" */
+                <div
+                  data-testid="dothunt-place-dots-stage"
+                  className="flex flex-col items-center gap-2.5"
+                >
+                  <p className="text-[12px] font-medium text-[var(--ink)]/75">
+                    Touche autour de la lettre pour poser ou retirer un point (
+                    {placedCustomDots.length} posé
+                    {placedCustomDots.length > 1 ? 's' : ''})
+                  </p>
+
                   <svg
-                    ref={dotHuntSvgRef}
                     viewBox="0 0 200 200"
                     data-testid="dothunt-interactive-canvas"
-                    className="w-[128px] h-[128px] rounded-[16px] bg-[var(--surface)] border border-[var(--line)] touch-none cursor-pointer"
-                    onClick={(e) => {
+                    className="w-[188px] h-[188px] rounded-[22px] bg-[var(--surface)] border-2 border-[var(--line)] touch-none cursor-crosshair"
+                    onPointerDown={(e) => {
+                      if (inputLocked) return;
+                      e.preventDefault();
                       const rect = e.currentTarget.getBoundingClientRect();
-                      const sx = ((e.clientX - rect.left) / rect.width) * 200;
-                      const sy = ((e.clientY - rect.top) / rect.height) * 200;
-                      handleDropAtSvgCoord(sx, sy);
+                      const sx =
+                        ((e.clientX - rect.left) / Math.max(1, rect.width)) *
+                        200;
+                      const sy =
+                        ((e.clientY - rect.top) / Math.max(1, rect.height)) *
+                        200;
+
+                      setShowCorrectDotsOverlay(false);
+                      // Tap an existing placed dot to remove it
+                      const existingIdx = placedCustomDots.findIndex(
+                        (p) => Math.hypot(p.x - sx, p.y - sy) <= 22
+                      );
+                      if (existingIdx >= 0) {
+                        speechService.triggerHaptic('stroke_ok');
+                        setPlacedCustomDots((prev) =>
+                          prev.filter((_, idx) => idx !== existingIdx)
+                        );
+                      } else if (placedCustomDots.length < 4) {
+                        speechService.triggerHaptic('stroke_ok');
+                        setPlacedCustomDots((prev) => [
+                          ...prev,
+                          { x: Math.round(sx), y: Math.round(sy) },
+                        ]);
+                      }
                     }}
                   >
+                    <line
+                      x1="20"
+                      y1={glyph.baseline}
+                      x2="180"
+                      y2={glyph.baseline}
+                      stroke="var(--line)"
+                      strokeWidth="1.5"
+                      strokeDasharray="5 5"
+                    />
                     {bodyStrokes.map((bs) => (
                       <path
                         key={bs.id}
@@ -1037,128 +1429,111 @@ export function MiniGamePlayView({
                         stroke="#07463D"
                         strokeWidth={bs.width}
                         strokeLinecap="round"
+                        strokeLinejoin="round"
                       />
                     ))}
-                    {dotStrokes.map((d) => {
-                      const isSnapped = snappedDotIndices.includes(d.id);
-                      return (
+
+                    {/* Learner's placed dots */}
+                    {placedCustomDots.map((d, idx) => (
+                      <g
+                        key={`custom_dot_${idx}_${d.x}_${d.y}`}
+                        data-testid={`dothunt-placed-dot-${idx}`}
+                        transform={`translate(${d.x}, ${d.y}) rotate(45)`}
+                      >
                         <g
-                          key={d.id}
-                          transform={`translate(${d.at[0]}, ${d.at[1]}) rotate(45)`}
+                          className="dot-pop"
+                          style={{
+                            transformBox: 'fill-box',
+                            transformOrigin: 'center',
+                          }}
                         >
-                          {isSnapped ? (
-                            <rect
-                              x={-dotSide / 2}
-                              y={-dotSide / 2}
-                              width={dotSide}
-                              height={dotSide}
-                              rx={2}
-                              fill="#0D5C46"
-                            />
-                          ) : (
-                            <rect
-                              x={-dotSide / 2}
-                              y={-dotSide / 2}
-                              width={dotSide}
-                              height={dotSide}
-                              rx={2}
-                              fill="none"
-                              stroke="#D97706"
-                              strokeWidth={2}
-                              strokeDasharray="3 3"
-                            />
-                          )}
+                          <rect
+                            x={-dotSide / 2}
+                            y={-dotSide / 2}
+                            width={dotSide}
+                            height={dotSide}
+                            rx={1.6}
+                            fill="#07463D"
+                            stroke="#FFFFFF"
+                            strokeWidth="2"
+                          />
                         </g>
-                      );
-                    })}
+                      </g>
+                    ))}
+
+                    {/* On failure, show the correct dots in green over the answer */}
+                    {showCorrectDotsOverlay &&
+                      dotStrokes.map((ds, idx) => (
+                        <g
+                          key={`correct_overlay_${ds.id}_${idx}`}
+                          data-testid={`dothunt-correct-dot-${idx}`}
+                          transform={`translate(${ds.at[0]}, ${ds.at[1]}) rotate(45)`}
+                        >
+                          <rect
+                            x={-(dotSide + 2) / 2}
+                            y={-(dotSide + 2) / 2}
+                            width={dotSide + 2}
+                            height={dotSide + 2}
+                            rx={2}
+                            fill="#1FB57A"
+                            stroke="#FFFFFF"
+                            strokeWidth="2"
+                          />
+                        </g>
+                      ))}
                   </svg>
 
-                  {/* Draggable diamond dot token */}
-                  <button
-                    type="button"
-                    data-testid="dothunt-draggable-dot"
-                    aria-label="Glisser ou toucher pour placer un point sur la lettre"
-                    onPointerDown={(e) => {
-                      (e.currentTarget as HTMLElement).setPointerCapture?.(
-                        e.pointerId
-                      );
-                      setDraggingDotOffset({ x: 0, y: 0 });
-                    }}
-                    onPointerMove={(e) => {
-                      if (!draggingDotOffset) return;
-                      setDraggingDotOffset({
-                        x: e.movementX + draggingDotOffset.x,
-                        y: e.movementY + draggingDotOffset.y,
-                      });
-                    }}
-                    onPointerUp={(e) => {
-                      setDraggingDotOffset(null);
-                      const svg = dotHuntSvgRef.current;
-                      if (svg) {
-                        const rect = svg.getBoundingClientRect();
-                        if (
-                          e.clientX >= rect.left &&
-                          e.clientX <= rect.right &&
-                          e.clientY >= rect.top &&
-                          e.clientY <= rect.bottom
-                        ) {
-                          const sx =
-                            ((e.clientX - rect.left) / rect.width) * 200;
-                          const sy =
-                            ((e.clientY - rect.top) / rect.height) * 200;
-                          handleDropAtSvgCoord(sx, sy);
-                          return;
-                        }
-                      }
-                      const nextDot = dotStrokes.find(
-                        (d) => !snappedDotIndices.includes(d.id)
-                      );
-                      if (nextDot) {
-                        handleDropAtSvgCoord(nextDot.at[0], nextDot.at[1]);
-                      }
-                    }}
-                    className="min-w-[64px] min-h-[64px] px-3 py-2 rounded-[16px] bg-[var(--surface)] border-2 border-[var(--accent)] flex flex-col items-center justify-center gap-1 pressable cursor-grab active:cursor-grabbing"
-                  >
-                    <span className="w-4 h-4 bg-[#0D5C46] rotate-45 block rounded-[2px]" />
-                    <span className="text-[11px] font-bold text-[var(--ink)]">
-                      Glisser point ({snappedDotIndices.length}/
-                      {dotStrokes.length})
-                    </span>
-                  </button>
+                  {roundState === 'playing' && (
+                    <div className="w-full flex items-center justify-center gap-2">
+                      {placedCustomDots.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPlacedCustomDots([]);
+                            setShowCorrectDotsOverlay(false);
+                          }}
+                          className="min-h-[48px] px-3.5 rounded-[14px] bg-[var(--surface)] border border-[var(--line)] text-[13px] font-semibold text-[var(--ink)] flex items-center gap-1.5 pressable cursor-pointer"
+                        >
+                          <RotateCcw className="w-4 h-4" />
+                          <span>Effacer</span>
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        data-testid="dothunt-validate-btn"
+                        onClick={() => {
+                          if (inputLocked) return;
+                          const passed = validateCustomPlacedDotsForLetter(
+                            r.letter,
+                            placedCustomDots
+                          );
+                          if (passed) {
+                            setShowCorrectDotsOverlay(false);
+                            recordRoundWin(answerDisplay);
+                          } else {
+                            setShowCorrectDotsOverlay(true);
+                            recordMistake(answerDisplay);
+                          }
+                        }}
+                        className="flex-1 min-h-[50px] h-[50px] px-5 rounded-[16px] bg-[var(--accent)] text-[var(--accent-ink)] font-bold text-[15px] flex items-center justify-center pressable cursor-pointer"
+                      >
+                        Valider
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
-
-              <div className="grid grid-cols-1 gap-2">
-                {r.options.map((opt) => (
-                  <button
-                    key={opt.id}
-                    type="button"
-                    data-testid={`dothunt-opt-${opt.id}`}
-                    onClick={() => {
-                      if (opt.isCorrect) {
-                        recordRoundWin();
-                      } else {
-                        recordMistake();
-                      }
-                    }}
-                    className="min-h-[68px] rounded-[18px] bg-[var(--surface)] border-2 border-[var(--line)] px-4 py-2 flex items-center justify-between pressable cursor-pointer"
-                  >
-                    <span className="text-[15px] font-bold text-[var(--ink)]">
-                      {opt.labelFr}
-                    </span>
-                    {renderDotOptionSvg(opt)}
-                  </button>
-                ))}
-              </div>
             </div>
           );
         })()}
 
-      {/* 3. COURSE DE LA FOURMI (tap the stone, the ant hops with a real parabolic arc) */}
-      {gameId === 'course_fourmi' &&
+      {/* 3. COURSE DE LA FOURMI (Fix C item 5: show validation panel after hop animation ends) */}
+      {effectiveGameId === 'course_fourmi' &&
         (() => {
           const r = streamRounds[roundIdx] || streamRounds[0];
           if (!r) return null;
+          const answerDisplay = makeAnswerDisplayFromLetter(r.targetLetter);
+
           return (
             <div className="space-y-4 text-center">
               <div className="flex items-center justify-between bg-[var(--paper)] rounded-[18px] p-3 border border-[var(--line)]">
@@ -1184,7 +1559,6 @@ export function MiniGamePlayView({
 
               {/* Stream visualization + Parabolic Ant Hop Arc + Stones */}
               <div className="rounded-[24px] bg-[#0B6B5D]/15 border-2 border-[#0B6B5D]/30 p-4 space-y-4 relative overflow-hidden">
-                {/* Parabolic SVG arc indicator when hopping */}
                 <svg
                   viewBox="0 0 300 54"
                   className="w-full h-12 overflow-visible pointer-events-none"
@@ -1206,12 +1580,12 @@ export function MiniGamePlayView({
                       <g
                         key={hop}
                         transform={`translate(${cx}, ${cy})`}
-                        className="transition-all duration-300"
                       >
                         <circle
                           r={14}
                           fill={
-                            hop < roundIdx
+                            hop < roundIdx ||
+                            (hop === roundIdx && roundState === 'won')
                               ? '#15803D'
                               : hop === roundIdx
                               ? '#F59E0B'
@@ -1225,9 +1599,19 @@ export function MiniGamePlayView({
                           dominantBaseline="central"
                           fontSize={12}
                           fontWeight={800}
-                          fill={hop < roundIdx ? '#FFFFFF' : '#111C18'}
+                          fill={
+                            hop < roundIdx ||
+                            (hop === roundIdx && roundState === 'won')
+                              ? '#FFFFFF'
+                              : '#111C18'
+                          }
                         >
-                          {hop === roundIdx ? '🐜' : hop < roundIdx ? '✓' : hop + 1}
+                          {hop === roundIdx && roundState !== 'won'
+                            ? '🐜'
+                            : hop <= roundIdx &&
+                              (hop < roundIdx || roundState === 'won')
+                            ? '✓'
+                            : hop + 1}
                         </text>
                       </g>
                     );
@@ -1241,26 +1625,45 @@ export function MiniGamePlayView({
                       <button
                         key={stone.id}
                         type="button"
+                        disabled={inputLocked}
                         data-testid={`stream-stone-${stone.id}`}
                         aria-label={`Pierre lettre ${stone.shortName}`}
                         onClick={() => {
+                          if (inputLocked) return;
                           speechService.speakArabic(stone.speechText);
                           if (stone.id === r.targetLetter.id) {
                             setAntHopArcStoneIdx(sIdx);
-                            recordRoundWin();
+                            setIsHopping(true);
+                            const hopDelay = (window as unknown as {
+                              __NOUQTA_FAST_TEST__?: boolean;
+                            }).__NOUQTA_FAST_TEST__
+                              ? 0
+                              : 240;
+                            if (hopDelay === 0) {
+                              setIsHopping(false);
+                              recordRoundWin(answerDisplay);
+                            } else {
+                              hopTimerRef.current = window.setTimeout(() => {
+                                setIsHopping(false);
+                                recordRoundWin(answerDisplay);
+                              }, hopDelay);
+                            }
                           } else {
-                            recordMistake();
                             setWobbleStoneId(stone.id);
                             window.setTimeout(
                               () => setWobbleStoneId(null),
-                              400
+                              380
                             );
+                            recordMistake(answerDisplay);
                           }
                         }}
-                        className={`min-h-[82px] rounded-full bg-[var(--surface)] border-2 border-[var(--line)] flex flex-col items-center justify-center pressable cursor-pointer shadow-sm transition-transform ${
-                          isWobbling
+                        className={`min-h-[82px] rounded-full bg-[var(--surface)] border-2 flex flex-col items-center justify-center pressable cursor-pointer shadow-sm transition-transform ${
+                          roundState === 'won' &&
+                          stone.id === r.targetLetter.id
+                            ? 'border-[var(--good)] bg-[var(--good)]/15'
+                            : isWobbling
                             ? 'animate-shake border-[var(--bad)]'
-                            : ''
+                            : 'border-[var(--line)]'
                         }`}
                       >
                         <span
@@ -1279,14 +1682,21 @@ export function MiniGamePlayView({
           );
         })()}
 
-      {/* 4. MOT À ASSEMBLER (drag or tap tiles with snapping & bounce on success) */}
-      {gameId === 'mot_assembler' &&
+      {/* 4. MOT À ASSEMBLER */}
+      {effectiveGameId === 'mot_assembler' &&
         (() => {
           const r = assembleRounds[roundIdx] || assembleRounds[0];
           if (!r) return null;
+          const answerDisplay: RoundAnswerDisplay = {
+            arabicText: r.targetAr,
+            labelFr: r.translationFr,
+            picture: r.picture,
+            wordAr: r.targetAr,
+            wordFr: r.translationFr,
+          };
 
           const selectTile = (tileId: string, speechText: string) => {
-            if (pickedTileIds.includes(tileId)) return;
+            if (inputLocked || pickedTileIds.includes(tileId)) return;
             speechService.speakArabic(speechText);
             const nextPicked = [...pickedTileIds, tileId];
             setPickedTileIds(nextPicked);
@@ -1301,10 +1711,28 @@ export function MiniGamePlayView({
               );
               if (isCorrect) {
                 setWordBounceSuccess(true);
-                recordRoundWin();
+                recordRoundWin(answerDisplay);
               } else {
-                recordMistake();
-                window.setTimeout(() => setPickedTileIds([]), 420);
+                recordMistake(answerDisplay, () => {
+                  // Place tiles in correct order when revealed after 2 mistakes
+                  const usedSet = new Set<string>();
+                  const orderedIds = r.targetLetterIds.map((lid) => {
+                    const match = r.scrambledTiles.find(
+                      (t) => t.letterId === lid && !usedSet.has(t.tileId)
+                    );
+                    if (match) {
+                      usedSet.add(match.tileId);
+                      return match.tileId;
+                    }
+                    return r.scrambledTiles[0].tileId;
+                  });
+                  setPickedTileIds(orderedIds);
+                });
+                window.setTimeout(() => {
+                  setPickedTileIds((prev) =>
+                    roundMistakes + 1 >= 2 ? prev : []
+                  );
+                }, 420);
               }
             }
           };
@@ -1385,8 +1813,8 @@ export function MiniGamePlayView({
                     <button
                       key={tile.tileId}
                       type="button"
-                      draggable={!used}
-                      disabled={used}
+                      draggable={!used && !inputLocked}
+                      disabled={used || inputLocked}
                       data-testid={`word-tile-${tile.tileId}`}
                       aria-label={`Choisir la lettre ${tile.arabicChar}`}
                       onDragStart={(e) => {
@@ -1400,7 +1828,7 @@ export function MiniGamePlayView({
                   );
                 })}
 
-                {pickedTileIds.length > 0 && (
+                {pickedTileIds.length > 0 && roundState === 'playing' && (
                   <button
                     type="button"
                     aria-label="Réinitialiser les lettres"
@@ -1416,16 +1844,21 @@ export function MiniGamePlayView({
           );
         })()}
 
-      {/* 5. LETTRE MYSTÈRE (swipe/hold across canvas to reveal strokes; fewer reveals = more stars) */}
-      {gameId === 'lettre_mystere' &&
+      {/* 5. LETTRE MYSTÈRE */}
+      {effectiveGameId === 'lettre_mystere' &&
         (() => {
           const r = mysteryRounds[roundIdx] || mysteryRounds[0];
           if (!r) return null;
           const allStrokes = r.targetLetter.forms.isolated.strokes;
-          const visibleStrokes = allStrokes.slice(0, revealedStrokeStage);
+          const visibleStrokes =
+            roundState === 'won'
+              ? allStrokes
+              : allStrokes.slice(0, revealedStrokeStage);
           const dotSide = getDotRectSide(15);
+          const answerDisplay = makeAnswerDisplayFromLetter(r.targetLetter);
 
           const revealNextStroke = () => {
+            if (inputLocked) return;
             if (revealedStrokeStage < allStrokes.length) {
               setRevealedStrokeStage((s) => Math.min(allStrokes.length, s + 1));
               setTotalExtraRevealsUsed((c) => c + 1);
@@ -1440,21 +1873,23 @@ export function MiniGamePlayView({
                   Glisse sur la carte pour révéler un trait (moins d’indices =
                   plus d’étoiles)
                 </span>
-                {revealedStrokeStage < allStrokes.length && (
-                  <button
-                    type="button"
-                    onClick={revealNextStroke}
-                    className="min-h-[48px] px-3 rounded-full bg-[var(--surface)] border border-[var(--line)] text-[12px] font-bold text-[var(--brand)] pressable cursor-pointer shrink-0 flex items-center gap-1"
-                  >
-                    <Hand className="w-3.5 h-3.5" />
-                    <span>+1 trait</span>
-                  </button>
-                )}
+                {revealedStrokeStage < allStrokes.length &&
+                  roundState === 'playing' && (
+                    <button
+                      type="button"
+                      onClick={revealNextStroke}
+                      className="min-h-[48px] px-3 rounded-full bg-[var(--surface)] border border-[var(--line)] text-[12px] font-bold text-[var(--brand)] pressable cursor-pointer shrink-0 flex items-center gap-1"
+                    >
+                      <Hand className="w-3.5 h-3.5" />
+                      <span>+1 trait</span>
+                    </button>
+                  )}
               </div>
 
               <div
                 data-testid="mystery-swipe-canvas"
                 onPointerMove={(e) => {
+                  if (inputLocked) return;
                   if (e.buttons > 0 || e.pressure > 0) {
                     const now = performance.now();
                     if (now - lastSwipeRevealTsRef.current > 350) {
@@ -1495,7 +1930,7 @@ export function MiniGamePlayView({
                   )}
                 </svg>
                 <span className="absolute bottom-1.5 right-2.5 text-[10px] font-mono-tag text-[var(--ink)]/60">
-                  {revealedStrokeStage}/{allStrokes.length}
+                  {visibleStrokes.length}/{allStrokes.length}
                 </span>
               </div>
 
@@ -1504,16 +1939,22 @@ export function MiniGamePlayView({
                   <button
                     key={opt.id}
                     type="button"
+                    disabled={inputLocked}
                     data-testid={`mystery-opt-${opt.id}`}
                     onClick={() => {
+                      if (inputLocked) return;
                       speechService.speakArabic(opt.speechText);
                       if (opt.id === r.targetLetter.id) {
-                        recordRoundWin();
+                        recordRoundWin(answerDisplay);
                       } else {
-                        recordMistake();
+                        recordMistake(answerDisplay);
                       }
                     }}
-                    className="min-h-[68px] rounded-[18px] bg-[var(--surface)] border-2 border-[var(--line)] px-3 py-2 flex items-center justify-between pressable cursor-pointer"
+                    className={`min-h-[68px] rounded-[18px] bg-[var(--surface)] border-2 px-3 py-2 flex items-center justify-between pressable cursor-pointer ${
+                      roundState === 'won' && opt.id === r.targetLetter.id
+                        ? 'border-[var(--good)] bg-[var(--good)]/15'
+                        : 'border-[var(--line)]'
+                    }`}
                   >
                     <span className="text-[14px] font-bold text-[var(--ink)]">
                       {opt.shortName}
@@ -1531,6 +1972,108 @@ export function MiniGamePlayView({
             </div>
           );
         })()}
+
+      {/* =====================================================================
+          FIX C (3, 4, 7): Pinned Validation Panel at the bottom of the game card.
+          - Green panel on win: check icon, feedback sentence, correct answer (letter + word with picture),
+            ant in cheer pose (Kids).
+          - Neutral panel after 2 mistakes in the same round: "Voici la réponse" + correct answer.
+          - Saffron button "Continuer" (on round 5 or last pair in Mémoire: "Voir mon résultat").
+          - Only that button advances roundIdx.
+         ===================================================================== */}
+      {roundState === 'won' && revealedAnswer && (
+        <div
+          data-testid="minigame-validation-panel"
+          data-outcome={roundOutcome}
+          className={`mt-1 rounded-[20px] border-2 p-3.5 flex flex-col gap-3 transition-all ${
+            roundOutcome === 'won'
+              ? 'bg-[var(--good)]/15 border-[var(--good)]'
+              : 'bg-[var(--surface)] border-[var(--line)]'
+          }`}
+        >
+          <div className="flex items-center justify-between gap-2.5">
+            <div className="flex items-center gap-2 min-w-0">
+              <div
+                className={`w-7 h-7 rounded-full flex items-center justify-center shrink-0 ${
+                  roundOutcome === 'won'
+                    ? 'bg-[var(--good)] text-white'
+                    : 'bg-[var(--ink)]/15 text-[var(--ink)]'
+                }`}
+              >
+                {roundOutcome === 'won' ? (
+                  <Check className="w-4 h-4 stroke-[2.5]" />
+                ) : (
+                  <Info className="w-4 h-4" />
+                )}
+              </div>
+              <span
+                data-testid="minigame-validation-title"
+                className={`text-[14px] font-bold truncate ${
+                  roundOutcome === 'won'
+                    ? 'text-[var(--good)]'
+                    : 'text-[var(--ink)]'
+                }`}
+              >
+                {roundOutcome === 'won'
+                  ? feedbackSentence || POSITIVE_FEEDBACK_VARIANTS[0]
+                  : 'Voici la réponse'}
+              </span>
+            </div>
+
+            {mode === 'kids' && roundOutcome === 'won' && (
+              <Mascot pose="cheer" size={38} mode={mode} />
+            )}
+          </div>
+
+          {/* Correct answer card (letter, word with its picture) */}
+          <div
+            data-testid="minigame-validation-answer"
+            className="rounded-[14px] bg-[var(--paper)] border border-[var(--line)] px-3 py-2 flex items-center justify-between gap-3"
+          >
+            <div className="flex items-center gap-2.5 min-w-0">
+              <span
+                className="text-[28px] leading-none shrink-0"
+                aria-hidden="true"
+              >
+                {revealedAnswer.picture}
+              </span>
+              <div className="flex flex-col items-start min-w-0 text-left">
+                <span className="text-[14px] font-bold text-[var(--ink)] truncate">
+                  {revealedAnswer.labelFr}
+                </span>
+                {(revealedAnswer.wordFr || revealedAnswer.wordAr) && (
+                  <span className="text-[12px] font-medium text-[var(--ink)]/75 truncate">
+                    {revealedAnswer.wordFr ? `${revealedAnswer.wordFr} · ` : ''}
+                    {revealedAnswer.wordAr && (
+                      <span lang="ar" dir="rtl" className="font-arabic">
+                        {revealedAnswer.wordAr}
+                      </span>
+                    )}
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <span
+              lang="ar"
+              dir="rtl"
+              className="font-arabic text-[34px] text-[var(--ink)] leading-none shrink-0"
+            >
+              {revealedAnswer.arabicText}
+            </span>
+          </div>
+
+          {/* Saffron "Continuer" / "Voir mon résultat" button */}
+          <button
+            type="button"
+            data-testid="minigame-continue-btn"
+            onClick={handleContinueAfterValidation}
+            className="w-full min-h-[52px] h-[52px] px-5 rounded-[16px] bg-[var(--accent)] text-[var(--accent-ink)] font-bold text-[15px] flex items-center justify-center pressable cursor-pointer shadow-sm"
+          >
+            {isFinalRoundInGame ? 'Voir mon résultat' : 'Continuer'}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
