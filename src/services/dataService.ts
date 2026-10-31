@@ -36,6 +36,7 @@ export interface Progress {
   box: 0 | 1 | 2 | 3 | 4 | 5; // Sec. 6.6: Box 5 = mastered (gold star)
   nextReviewAt: string; // YYYY-MM-DD
   stars: 0 | 1 | 2 | 3;
+  source?: 'lesson' | 'placement'; // Phase 5.4 & 5.6: 'placement' when placed by test
   firstDoneAt?: string;
   masteredAt?: string;
   firstTrace?: Point2D[]; // Ramer-Douglas-Peucker simplified, < 2 KB
@@ -136,10 +137,33 @@ export interface Setting {
   sound: boolean;
   haptics: boolean;
   animations?: boolean; // Phase A.1: Reglages toggle "Animations" (default on)
+  textScale?: 100 | 115 | 130; // Phase 4.1: "Taille du texte" (Normal / Grand / Très grand = 100% / 115% / 130%)
   weeklyGoal: 2 | 3 | 5;
   rhythm: 'calme' | 'normal' | 'intensif';
   voiceName: string | null;
   transliteration: boolean;
+}
+
+export interface LetterRatingEntry {
+  userId: string;
+  letterId: string;
+  rating: 'good' | 'neutral' | 'hard';
+  date: string;
+}
+
+export interface PlacementAnswerRecord {
+  familyId: FamilyId;
+  questionId: string;
+  correct: boolean;
+  dontKnow?: boolean;
+}
+
+export interface PlacementTestRecord {
+  takenAt: string;
+  resultFamilyId: FamilyId;
+  startLetterId: string;
+  passedFamilyIds: FamilyId[];
+  answers: PlacementAnswerRecord[];
 }
 
 export interface AdminConfig {
@@ -177,6 +201,9 @@ export interface BlueprintState {
   recentQuizItemKeys?: string[]; // Phase F.1: no item repeated within last 20
   practiceHistory: Record<string, PracticeAttempt[]>; // `${userId}_${letterId}` -> max 10
   onboardingDoneUsers: Record<string, boolean>;
+  placementPromptSeen?: Record<string, boolean>; // Phase 5.1: first-launch "Où en es-tu ?"
+  placement?: Record<string, PlacementTestRecord>; // Phase 5.7: placement result per userId
+  letterRatings?: LetterRatingEntry[]; // Phase 4.5: 3-face rating saved with letterId and date
   coachMarkStepUsers: Record<string, number>; // 0 = Commencer, 1..5 = lesson steps, 99 = done
   harakatLessonSeenUsers: Record<string, boolean>;
   teacherLinks: Record<string, TeacherLinkInfo>;
@@ -198,6 +225,34 @@ export const GLYPH_EDITOR_STORAGE_KEY = 'nouqta_glyph_editor_overrides_v1';
 
 export function getTodayIsoDate(): string {
   return new Date().toISOString().slice(0, 10);
+}
+
+const FRENCH_SHORT_MONTHS = [
+  'janv.',
+  'févr.',
+  'mars',
+  'avr.',
+  'mai',
+  'juin',
+  'juil.',
+  'août',
+  'sept.',
+  'oct.',
+  'nov.',
+  'déc.'
+] as const;
+
+/**
+ * Phase 3.3: Formats ISO dates like "2026-10-29" as "29 oct." instead of raw YYYY-MM-DD.
+ */
+export function formatFrenchShortDate(dateStr?: string): string {
+  if (!dateStr) return "Aujourd'hui";
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(dateStr.trim());
+  if (!m) return dateStr;
+  const monthIdx = parseInt(m[2], 10) - 1;
+  const dayNum = parseInt(m[3], 10);
+  if (monthIdx < 0 || monthIdx > 11 || Number.isNaN(dayNum)) return dateStr;
+  return `${dayNum} ${FRENCH_SHORT_MONTHS[monthIdx]}`;
 }
 
 export function addDaysToIsoDate(baseIso: string, days: number): string {
@@ -552,6 +607,12 @@ export function getInitialBlueprintState(): BlueprintState {
       u_learner_1: true,
       u_kid_1: true
     },
+    placementPromptSeen: {
+      u_learner_1: true,
+      u_kid_1: true
+    },
+    placement: {},
+    letterRatings: [],
     coachMarkStepUsers: {
       u_learner_1: 99,
       u_kid_1: 99
@@ -613,13 +674,163 @@ export function loadBlueprintState(): BlueprintState {
   }
 }
 
-export function saveBlueprintState(state: BlueprintState): void {
-  if (typeof window === 'undefined') return;
+export function saveBlueprintState(state: BlueprintState): boolean {
+  if (typeof window === 'undefined') return true;
   try {
+    const win = window as unknown as {
+      __NOUQTA_SIMULATE_STORAGE_FULL__?: boolean;
+    };
+    if (win.__NOUQTA_SIMULATE_STORAGE_FULL__) {
+      throw new Error('QuotaExceededError: Simulated storage full');
+    }
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    return true;
   } catch {
-    // Ignore storage quota errors
+    return false;
   }
+}
+
+/**
+ * Phase 4.4: Deletes old handwriting photos from state to free up localStorage space.
+ */
+export function deleteOldPhotosFromState(state: BlueprintState): BlueprintState {
+  return {
+    ...state,
+    submissions: state.submissions.filter((s) => s.kind === 'audio'),
+    offlineUploadQueue: (state.offlineUploadQueue || []).filter(
+      (s) => s.kind === 'audio'
+    )
+  };
+}
+
+/**
+ * Phase 4.5: Saves a one-tap 3-face rating ('good' | 'neutral' | 'hard') with letterId and date.
+ */
+export function saveLetterRating(
+  state: BlueprintState,
+  userId: string,
+  letterId: string,
+  rating: 'good' | 'neutral' | 'hard',
+  dateIso = getTodayIsoDate()
+): BlueprintState {
+  const existingList = state.letterRatings || [];
+  const filtered = existingList.filter(
+    (r) => !(r.userId === userId && r.letterId === letterId)
+  );
+  return {
+    ...state,
+    letterRatings: [
+      ...filtered,
+      {
+        userId,
+        letterId,
+        rating,
+        date: dateIso
+      }
+    ]
+  };
+}
+
+/**
+ * Phase 5.3 & 5.4: Applies the placement test result to the learner's state.
+ * - Letters of passed families become 'acquis': all 5 steps marked done,
+ *   source: 'placement', stars: 1, box: 2.
+ * - Stores placement: { takenAt, resultFamilyId, startLetterId, passedFamilyIds, answers[] } in state.
+ */
+export function applyPlacementTestResult(
+  state: BlueprintState,
+  userId: string,
+  passedFamilyIds: FamilyId[],
+  answers: PlacementAnswerRecord[],
+  takenAtIso = getTodayIsoDate()
+): {
+  nextState: BlueprintState;
+  resultFamilyId: FamilyId;
+  startLetter: LetterRecord;
+} {
+  const passedSet = new Set<FamilyId>(passedFamilyIds);
+  const firstUnpassedFamily =
+    LETTER_FAMILIES.find((f) => !passedSet.has(f.id)) ||
+    LETTER_FAMILIES[LETTER_FAMILIES.length - 1];
+  const resultFamilyId = firstUnpassedFamily.id;
+  const startLetterId = firstUnpassedFamily.letters[0] || 'alif';
+  const startLetter =
+    LETTERS_DATA.find((l) => l.id === startLetterId) || LETTERS_DATA[0];
+
+  const passedLetterIds = new Set<string>();
+  LETTER_FAMILIES.forEach((fam) => {
+    if (passedSet.has(fam.id)) {
+      fam.letters.forEach((lid) => passedLetterIds.add(lid));
+    }
+  });
+
+  const existingProgressMap = new Map<string, Progress>();
+  state.progress.forEach((p) => {
+    if (p.userId === userId) {
+      existingProgressMap.set(p.letterId, p);
+    }
+  });
+
+  passedLetterIds.forEach((lid) => {
+    const prev = existingProgressMap.get(lid);
+    const traces = buildSeedTracesForLetter(lid);
+    existingProgressMap.set(lid, {
+      userId,
+      letterId: lid,
+      stepsDone: ['voir', 'ecouter', 'tracer', 'ecrire', 'retenir'],
+      box: prev && prev.box > 2 ? prev.box : 2,
+      nextReviewAt: addDaysToIsoDate(takenAtIso, 3),
+      stars: prev && prev.stars > 1 ? prev.stars : 1,
+      source: 'placement',
+      firstDoneAt: prev?.firstDoneAt || takenAtIso,
+      firstTrace: prev?.firstTrace || traces.firstTrace,
+      bestTrace: prev?.bestTrace || traces.bestTrace,
+      bestTraceScore: prev?.bestTraceScore ?? 90
+    });
+  });
+
+  const otherUsersProgress = state.progress.filter((p) => p.userId !== userId);
+  const updatedUserProgress = Array.from(existingProgressMap.values());
+
+  const prevPassedExams = state.passedFamilyExams?.[userId] || [];
+  const nextPassedExams = Array.from(
+    new Set<FamilyId>([...prevPassedExams, ...passedFamilyIds])
+  );
+
+  const placementRecord: PlacementTestRecord = {
+    takenAt: takenAtIso,
+    resultFamilyId,
+    startLetterId,
+    passedFamilyIds,
+    answers
+  };
+
+  const nextState: BlueprintState = {
+    ...state,
+    progress: [...otherUsersProgress, ...updatedUserProgress],
+    passedFamilyExams: {
+      ...(state.passedFamilyExams || {}),
+      [userId]: nextPassedExams
+    },
+    placementPromptSeen: {
+      ...(state.placementPromptSeen || {}),
+      [userId]: true
+    },
+    onboardingDoneUsers: {
+      ...(state.onboardingDoneUsers || {}),
+      [userId]: true
+    },
+    placement: {
+      ...(state.placement || {}),
+      [userId]: placementRecord
+    }
+  };
+
+  return {
+    nextState,
+    resultFamilyId,
+    startLetter
+  };
 }
 
 /**

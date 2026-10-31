@@ -65,6 +65,12 @@ import {
   runPolishCheck5_ExamsProgressiveRule,
   runPolishCheck6_QuizOptionsPictureArabicFrench,
   runPolishCheck7_PracticeScores3Attempts,
+  runImprovementCheck1_FontOutlinesAndDots,
+  runImprovementCheck2_AlignmentAll28Letters,
+  runImprovementCheck3_DotSizeAndClearance28,
+  runImprovementCheck4_VowelQuiz20Questions,
+  runImprovementCheck5_DotHuntGuardAndShortDates,
+  runImprovementCheck8_PlacementTestAudit,
 } from '../components/DevSelfTestPage';
 import {
   buildAntStreamRounds,
@@ -290,17 +296,37 @@ describe('Nouqta Code Fixes (1–6), Calligraphy Engine & Polish Pass — Unit T
     }
   });
 
-  it('FIX 5: Yaa, Waaw, Miim, Qaaf, and Kaaf are marked as status: "brouillon" for re-authoring in /dev/glyphs', () => {
-    const targetIds = ['yaa', 'waaw', 'miim', 'qaaf', 'kaaf'];
-    for (const id of targetIds) {
-      const letter = LETTERS_DATA.find((l) => l.id === id);
-      assert.ok(letter, `Letter ${id} exists`);
+  it('Improvement Pass Phase 1–5: All 28 letters have status "aligne" & renderMode "font", and Checks 1..8 pass', () => {
+    for (const letter of LETTERS_DATA) {
       assert.equal(
         letter.forms.isolated.status,
-        'brouillon',
-        `${letter.shortName} (${id}) must have status: 'brouillon'`
+        'aligne',
+        `${letter.shortName} (${letter.id}) must have status: 'aligne'`
+      );
+      assert.equal(
+        letter.forms.isolated.renderMode,
+        'font',
+        `${letter.shortName} (${letter.id}) must have renderMode: 'font'`
       );
     }
+
+    const imp1 = runImprovementCheck1_FontOutlinesAndDots();
+    assert.equal(imp1.passed, true, imp1.details.join(' | '));
+
+    const imp2 = runImprovementCheck2_AlignmentAll28Letters();
+    assert.equal(imp2.passed, true, imp2.details.join(' | '));
+
+    const imp3 = runImprovementCheck3_DotSizeAndClearance28();
+    assert.equal(imp3.passed, true, imp3.details.join(' | '));
+
+    const imp4 = runImprovementCheck4_VowelQuiz20Questions();
+    assert.equal(imp4.passed, true, imp4.details.join(' | '));
+
+    const imp5 = runImprovementCheck5_DotHuntGuardAndShortDates();
+    assert.equal(imp5.passed, true, imp5.details.join(' | '));
+
+    const imp8 = runImprovementCheck8_PlacementTestAudit();
+    assert.equal(imp8.passed, true, imp8.details.join(' | '));
   });
 
   it('Check 1 (Phase A/D.1): Animation progress at 0 / 500 / 1500 ms / end for Baa, Taa, Jiim, Kaaf, Alif (5 replays + reducedMotion)', () => {

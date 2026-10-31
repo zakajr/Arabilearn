@@ -207,7 +207,7 @@ export function LettresScreen({ app }: { app: NouqtaAppController }) {
                         >
                           {displayLabel}
                         </span>
-                        <span className="text-[12px] text-[var(--ink)]/75 flex items-center gap-1.5">
+                        <span className="text-[13px] text-[var(--ink)]/75 flex items-center gap-1.5">
                           <span>{letter.picture}</span>
                           <span>{letter.keywordFr}</span>
                           <HighlightedArabicKeyword

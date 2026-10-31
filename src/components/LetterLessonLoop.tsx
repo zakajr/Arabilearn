@@ -50,6 +50,7 @@ import {
   validateDotsStep,
   validateSingleBodyStroke
 } from '../lib/strokeMath';
+import { getGlyphOutline } from '../lib/fontGlyphs';
 import {
   compressAndFormatPhoto,
   downloadLetterWritingSheet
@@ -166,7 +167,9 @@ export function LetterLessonLoop({
   onSavePracticeAttempt,
   onSubmitPaperPhoto,
   onNextLetter,
-  onOpenShareSheet
+  onOpenShareSheet,
+  onRateLetter,
+  initialRating = null
 }: {
   letter: LetterRecord;
   mode: LearnerMode;
@@ -185,7 +188,12 @@ export function LetterLessonLoop({
   onSubmitPaperPhoto: (dataUrl: string) => void;
   onNextLetter: () => void;
   onOpenShareSheet?: () => void;
+  onRateLetter?: (letterId: string, rating: 'good' | 'neutral' | 'hard') => void;
+  initialRating?: 'good' | 'neutral' | 'hard' | null;
 }) {
+  const [letterRating, setLetterRating] = useState<'good' | 'neutral' | 'hard' | null>(
+    initialRating
+  );
   const startIdx = initialPracticeMode
     ? 2
     : initialStep
@@ -207,6 +215,14 @@ export function LetterLessonLoop({
 
   const currentStepId = STEP_ORDER[stepIdx];
   const glyph = letter.forms.isolated;
+  const fontOutline = React.useMemo(
+    () => getGlyphOutline(letter.id, 'isolated'),
+    [letter.id]
+  );
+  const useFontRenderMode =
+    (glyph.renderMode === 'font' || glyph.status === 'aligne') &&
+    Boolean(fontOutline.bodyPath);
+  const voirMaskId = `voir-font-mask-${letter.id}`;
   const bodyStrokes = React.useMemo(
     () => glyph.strokes.filter((s): s is GlyphBodyStroke => s.kind === 'body'),
     [glyph]
@@ -262,6 +278,8 @@ export function LetterLessonLoop({
   });
   const stageContainerRef = useRef<HTMLDivElement | null>(null);
   const svgBodyPathRefs = useRef<(SVGPathElement | null)[]>([]);
+  const svgMaskPathRefs = useRef<(SVGPathElement | null)[]>([]);
+  const svgFontBodyGroupRef = useRef<SVGGElement | null>(null);
   const svgStartBadgeRefs = useRef<(SVGGElement | null)[]>([]);
   const svgDotGroupRefs = useRef<(SVGGElement | null)[]>([]);
   const antGroupRef = useRef<SVGGElement | null>(null);
@@ -299,9 +317,22 @@ export function LetterLessonLoop({
         );
       }
 
-      // 1. Update body stroke paths & start badges
+      // Phase 1.3: At progress = 1 remove the SVG mask so the full crisp Naskh outline is visible
+      if (svgFontBodyGroupRef.current) {
+        const allBodiesDone = evalState.strokeProgresses.every((p) => p >= 0.998);
+        if (evalState.progress >= 0.998 || (stepFilter === null && allBodiesDone)) {
+          svgFontBodyGroupRef.current.removeAttribute('mask');
+          svgFontBodyGroupRef.current.setAttribute('data-mask-removed', 'true');
+        } else {
+          svgFontBodyGroupRef.current.setAttribute('mask', `url(#${voirMaskId})`);
+          svgFontBodyGroupRef.current.setAttribute('data-mask-removed', 'false');
+        }
+      }
+
+      // 1. Update body stroke paths, mask stroke paths & start badges
       bodyStrokes.forEach((_, idx) => {
         const pathEl = svgBodyPathRefs.current[idx];
+        const maskPathEl = svgMaskPathRefs.current[idx];
         const badgeEl = svgStartBadgeRefs.current[idx];
         let sProg = evalState.strokeProgresses[idx] ?? 0;
 
@@ -310,11 +341,15 @@ export function LetterLessonLoop({
           else if (idx + 1 > stepFilter) sProg = 0;
         }
 
+        const offset = Math.max(0, Math.min(1, 1 - sProg));
         if (pathEl) {
-          const offset = Math.max(0, Math.min(1, 1 - sProg));
           pathEl.style.strokeDashoffset = offset.toFixed(4);
           pathEl.style.opacity = sProg > 0.002 ? '1' : '0';
           pathEl.setAttribute('data-progress', sProg.toFixed(2));
+        }
+        if (maskPathEl) {
+          maskPathEl.style.strokeDashoffset = offset.toFixed(4);
+          maskPathEl.style.opacity = sProg > 0.002 ? '1' : '0';
         }
 
         if (badgeEl) {
@@ -388,7 +423,7 @@ export function LetterLessonLoop({
 
       return evalState;
     },
-    [glyph, bodyStrokes, dotStrokes, mode, osReducedMotion]
+    [glyph, bodyStrokes, dotStrokes, mode, osReducedMotion, voirMaskId]
   );
 
   // Run single-progress requestAnimationFrame loop on entering Voir or pressing Rejouer
@@ -1308,7 +1343,7 @@ export function LetterLessonLoop({
             data-testid="lesson-step-coachmark"
             className="rounded-[14px] bg-[var(--accent)]/20 border border-[var(--accent)] px-3 py-1.5 flex items-center justify-between gap-2"
           >
-            <span className="text-[12px] font-bold text-[var(--ink)]">
+            <span className="text-[13px] font-bold text-[var(--ink)]">
               ▲ Guide : {coachMarkMessages[currentStepId]}
             </span>
           </div>
@@ -1322,12 +1357,7 @@ export function LetterLessonLoop({
         } py-1 flex flex-col justify-center overflow-y-auto animate-step`}
       >
         {/* =====================================================================
-            STEP 1: VOIR (Phases A, B, C, D:
-            - Empty light guide first, auto-plays from progress 0 -> 1 even when reducedMotion is on
-            - Stroke width 14 (7% of 200-unit glyph height), tapered ends
-            - Start badge "1", "2" offset above-left so the ant never hides it
-            - Ant never stands on top of the dots
-            - Reduced motion hint kept ONLY as a small icon tooltip, not a text line)
+            STEP 1: VOIR (Phases A, B, C, D + Phase 1.3 Real Naskh Font Outline)
            ===================================================================== */}
         {currentStepId === 'voir' && (
           <div className="flex flex-col items-center gap-3">
@@ -1335,7 +1365,7 @@ export function LetterLessonLoop({
             {debugOverlayOpen && (
               <div
                 data-testid="voir-debug-overlay"
-                className="w-full rounded-[14px] bg-[#0A1F1B] text-[#F2FAF7] p-2.5 font-mono text-[11px] space-y-1 border border-[var(--accent)]"
+                className="w-full rounded-[14px] bg-[#0A1F1B] text-[#F2FAF7] p-2.5 font-mono text-[13px] space-y-1 border border-[var(--accent)]"
               >
                 <div className="flex items-center justify-between">
                   <span>
@@ -1391,7 +1421,7 @@ export function LetterLessonLoop({
                   {showReducedMotionTooltip && (
                     <div
                       role="tooltip"
-                      className="absolute top-[52px] left-0 z-30 px-3 py-1.5 rounded-[12px] bg-[#0A1F1B] text-white text-[11px] font-semibold whitespace-nowrap shadow-md"
+                      className="absolute top-[52px] left-0 z-30 px-3 py-1.5 rounded-[12px] bg-[#0A1F1B] text-white text-[13px] font-semibold whitespace-nowrap shadow-md"
                     >
                       Animations réduites : appuie sur Rejouer
                     </div>
@@ -1404,7 +1434,40 @@ export function LetterLessonLoop({
                 className="w-full h-full overflow-visible"
                 aria-label={`Animation du tracé de la lettre ${letter.shortName}`}
               >
-                {/* Writing baseline (y = 120) */}
+                {useFontRenderMode && (
+                  <defs>
+                    <mask
+                      id={voirMaskId}
+                      maskUnits="userSpaceOnUse"
+                      x="0"
+                      y="0"
+                      width="200"
+                      height="200"
+                    >
+                      <rect x="0" y="0" width="200" height="200" fill="black" />
+                      {bodyStrokes.map((bs, idx) => (
+                        <path
+                          key={`mask_stroke_${bs.id}`}
+                          ref={(el) => {
+                            svgMaskPathRefs.current[idx] = el;
+                          }}
+                          d={bs.d}
+                          pathLength={1}
+                          fill="none"
+                          stroke="white"
+                          strokeWidth={48}
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeDasharray="1"
+                          strokeDashoffset={1}
+                          style={{ opacity: 0 }}
+                        />
+                      ))}
+                    </mask>
+                  </defs>
+                )}
+
+                {/* Writing baseline */}
                 <line
                   x1="20"
                   y1={glyph.baseline}
@@ -1415,9 +1478,33 @@ export function LetterLessonLoop({
                   strokeDasharray="5 5"
                 />
 
-                {/* 1. Empty Light Grey Guide + Sequenced Reed-Pen Ink Trail (width 14 = 7% of 200u) */}
+                {/* Phase 1.3: Empty Light Grey Naskh Body Outline Guide */}
+                {useFontRenderMode && (
+                  <path
+                    data-testid="voir-font-guide-body"
+                    d={fontOutline.bodyPath}
+                    fill="#C9D6D1"
+                  />
+                )}
+
+                {/* Phase 1.3: Naskh BODY outline filled with ink colour (#07463D), revealed through SVG <mask> */}
+                {useFontRenderMode && (
+                  <g
+                    ref={svgFontBodyGroupRef}
+                    data-testid="voir-font-body-group"
+                    data-render-mode="font"
+                    mask={`url(#${voirMaskId})`}
+                  >
+                    <path
+                      data-testid="voir-font-body-outline"
+                      d={fontOutline.bodyPath}
+                      fill="#07463D"
+                    />
+                  </g>
+                )}
+
+                {/* 1. Centre-line guide & animated stroke refs + Start badges */}
                 {bodyStrokes.map((bs, idx) => {
-                  // PHASE D.3: Offset start badge "1", "2" well above-left of the start point so the ant never hides it
                   const badgeX = Math.max(20, Math.min(180, bs.startDot[0] - 24));
                   const badgeY = Math.max(20, Math.min(180, bs.startDot[1] - 22));
 
@@ -1432,6 +1519,7 @@ export function LetterLessonLoop({
                         strokeWidth={bs.width}
                         strokeLinecap="round"
                         strokeLinejoin="round"
+                        opacity={useFontRenderMode ? 0 : 1}
                       />
 
                       {/* Animated dark-green ink trail driven by single progress ref */}
@@ -1444,7 +1532,7 @@ export function LetterLessonLoop({
                         d={bs.d}
                         pathLength={1}
                         fill="none"
-                        stroke="#07463D"
+                        stroke={useFontRenderMode ? 'transparent' : '#07463D'}
                         strokeWidth={bs.width}
                         strokeLinecap="round"
                         strokeLinejoin="round"
@@ -1473,7 +1561,7 @@ export function LetterLessonLoop({
                           x={badgeX}
                           y={badgeY + 4}
                           textAnchor="middle"
-                          fontSize="11"
+                          fontSize="13"
                           fontWeight="bold"
                           fill="var(--accent-ink)"
                         >
@@ -1484,30 +1572,47 @@ export function LetterLessonLoop({
                   );
                 })}
 
-                {/* 2. Diamond Dots (Phase C: square rotated 45 deg, size 0.9 x strokeWidth) */}
-                {dotStrokes.map((ds, idx) => (
-                  <g
-                    key={ds.id}
-                    ref={(el) => {
-                      svgDotGroupRefs.current[idx] = el;
-                    }}
-                    data-testid={`voir-popped-dot-${idx}`}
-                    data-visible="false"
-                    transform={`translate(${ds.at[0]}, ${ds.at[1]}) scale(1) rotate(45)`}
-                    style={{ opacity: 0 }}
-                  >
-                    <rect
-                      x={-dotRectSide / 2}
-                      y={-dotRectSide / 2}
-                      width={dotRectSide}
-                      height={dotRectSide}
-                      rx="1.6"
-                      fill="#07463D"
-                      stroke="#FFFFFF"
-                      strokeWidth="2"
-                    />
-                  </g>
-                ))}
+                {/* 2. Real Naskh Font Dot Contours (scaled 1.3x, diagonal >= 22u) or Diamond Dots */}
+                {dotStrokes.map((ds, idx) => {
+                  const fontDot = useFontRenderMode ? fontOutline.dots[idx] : undefined;
+                  return (
+                    <g
+                      key={ds.id}
+                      ref={(el) => {
+                        svgDotGroupRefs.current[idx] = el;
+                      }}
+                      data-testid={`voir-popped-dot-${idx}`}
+                      data-visible="false"
+                      transform={`translate(${ds.at[0]}, ${ds.at[1]}) scale(1) rotate(45)`}
+                      style={{ opacity: 0 }}
+                    >
+                      {fontDot ? (
+                        <g
+                          transform={`rotate(-45) translate(${-fontDot.cx}, ${-fontDot.cy})`}
+                        >
+                          <path
+                            data-testid={`voir-font-dot-path-${idx}`}
+                            d={fontDot.path}
+                            fill="#07463D"
+                            stroke="#FFFFFF"
+                            strokeWidth="1.5"
+                          />
+                        </g>
+                      ) : (
+                        <rect
+                          x={-dotRectSide / 2}
+                          y={-dotRectSide / 2}
+                          width={dotRectSide}
+                          height={dotRectSide}
+                          rx="1.6"
+                          fill="#07463D"
+                          stroke="#FFFFFF"
+                          strokeWidth="2"
+                        />
+                      )}
+                    </g>
+                  );
+                })}
 
                 {/* 3. PHASE D: CalligraphyAntSvgGroup (6 legs in two alternating groups switching every 120ms while moving, rotated to tangent, never hides start badge or dots) */}
                 <CalligraphyAntSvgGroup
@@ -1585,7 +1690,7 @@ export function LetterLessonLoop({
                 {!letter.connects && (
                   <span
                     title="Ne s'attache pas à gauche"
-                    className="px-2.5 py-1 rounded-full bg-[var(--accent)]/20 text-[var(--accent-ink)] text-[12px] font-semibold flex items-center gap-1 shrink-0"
+                    className="px-2.5 py-1 rounded-full bg-[var(--accent)]/20 text-[var(--accent-ink)] text-[13px] font-semibold flex items-center gap-1 shrink-0"
                   >
                     <Unlink className="w-3.5 h-3.5" />
                     <span>Sans liaison</span>
@@ -1721,7 +1826,7 @@ export function LetterLessonLoop({
                           {chip.sub}
                         </span>
                       </div>
-                      <span className="text-[11px] font-medium text-[var(--ink)]/70 truncate">
+                      <span className="text-[13px] font-medium text-[var(--ink)]/70 truncate">
                         {chip.markLabel}
                       </span>
                     </div>
@@ -1743,23 +1848,14 @@ export function LetterLessonLoop({
         )}
 
         {/* =====================================================================
-            STEP 3: TRACER — REBUILT FOR FIX A & FIX B
-            1. Top bar (above): Close button, 5-step bar, letter name + "..." menu button at the right.
-            2. Clean step indicator under top bar and above canvas:
-               - Line 1: ONE row of numbered circles 1, 2, 3... (28px, 8px gap, connected by thin line);
-                 done = green with a check, current = saffron, next = outline.
-               - Line 2: below the row, one short label on its own line ("Trait" or "Point 1").
-               - Nothing else on those two lines.
-            3. The canvas: the hero, >= 85% of screen width, square, centered.
-            4. Under the canvas: ONLY three icon buttons with labels: Effacer, Animation, Guide (1/3).
-            5. Sticky bottom: the saffron "Valider" button.
+            STEP 3: TRACER — REBUILT FOR FIX A & FIX B + PHASE 1.3 & PHASE 2
            ===================================================================== */}
         {currentStepId === 'tracer' && (
           <div className="flex flex-col items-center justify-center gap-2 w-full">
             {debugOverlayOpen && ignoredTouchesLog.length > 0 && (
               <div
                 data-testid="tracing-ignored-touches-debug"
-                className="w-[88vw] max-w-[336px] rounded-[10px] bg-[#0A1F1B] text-[#F2FAF7] px-2.5 py-1 font-mono text-[10px]"
+                className="w-[88vw] max-w-[336px] rounded-[10px] bg-[#0A1F1B] text-[#F2FAF7] px-2.5 py-1 font-mono text-[13px]"
               >
                 Touches ignorées : {ignoredTouchesLog.join(' · ')}
               </div>
@@ -1794,7 +1890,7 @@ export function LetterLessonLoop({
                         data-state={
                           isDone ? 'done' : isCurrent ? 'current' : 'next'
                         }
-                        className={`w-[28px] h-[28px] rounded-full flex items-center justify-center text-[12px] font-bold shrink-0 select-none ${
+                        className={`w-[28px] h-[28px] rounded-full flex items-center justify-center text-[13px] font-bold shrink-0 select-none ${
                           isDone
                             ? 'bg-[var(--good)] text-white'
                             : isCurrent
@@ -1862,6 +1958,25 @@ export function LetterLessonLoop({
                   />
                 )}
 
+                {/* Phase 1.3: Font body outline guide (light grey in body step, solid #07463D in dot step) */}
+                {useFontRenderMode && currentSubStep.kind === 'dot' && (
+                  <path
+                    data-testid="tracer-font-body-completed"
+                    d={fontOutline.bodyPath}
+                    fill="#07463D"
+                  />
+                )}
+                {useFontRenderMode &&
+                  currentSubStep.kind === 'body' &&
+                  traceMode !== 3 && (
+                    <path
+                      data-testid="tracer-font-body-guide"
+                      d={fontOutline.bodyPath}
+                      fill="#07463D"
+                      opacity={traceMode === 2 ? 0.2 : 0.25}
+                    />
+                  )}
+
                 {/* 1. Completed body strokes stay drawn in dark green (#07463D) */}
                 {bodyStrokes.map((bs, idx) => {
                   const isCompletedBodyStroke =
@@ -1877,6 +1992,7 @@ export function LetterLessonLoop({
                       strokeWidth={bs.width}
                       strokeLinecap="round"
                       strokeLinejoin="round"
+                      opacity={useFontRenderMode && currentSubStep.kind === 'dot' ? 0 : 1}
                     />
                   );
                 })}
@@ -1900,6 +2016,7 @@ export function LetterLessonLoop({
                           strokeWidth={14}
                           strokeLinecap="round"
                           strokeLinejoin="round"
+                          opacity={useFontRenderMode ? 0.45 : 1}
                         />
 
                         {traceMode === 1 && (
@@ -1926,7 +2043,7 @@ export function LetterLessonLoop({
                               x={bs.startDot[0]}
                               y={bs.startDot[1] + 4}
                               textAnchor="middle"
-                              fontSize="11"
+                              fontSize="13"
                               fontWeight="bold"
                               fill="var(--accent-ink)"
                             >
@@ -1938,10 +2055,7 @@ export function LetterLessonLoop({
                     );
                   })()}
 
-                {/* 3. FIX A & FIX B: Each dot step shows ONLY its own target:
-                    - mode 1: dashed diamond, pulsing (nested group so transform & animate-pulse are never on the same SVG element);
-                    - mode 2: 20% opacity;
-                    - mode 3: nothing (unless 2 misses occurred, then revealed briefly). */}
+                {/* 3. FIX A & FIX B + PHASE 2.2: Each dot step shows ONLY its own target with >= 48px invisible hit halo */}
                 {currentSubStep.kind === 'dot' &&
                   (traceMode === 1 ||
                     traceMode === 2 ||
@@ -1957,16 +2071,23 @@ export function LetterLessonLoop({
                         transform={`translate(${ds.at[0]}, ${ds.at[1]})`}
                         opacity={targetOpacity}
                       >
+                        {/* Phase 2.2: Invisible >= 48px hit target halo (r=24 in 200u viewBox = 48u diameter >= 76px on screen) */}
+                        <circle
+                          data-testid={`dot-hit-halo-${ds.id}`}
+                          cx={0}
+                          cy={0}
+                          r={24}
+                          fill="transparent"
+                        />
                         <g
                           className={
                             traceMode === 1 ? 'animate-pulse' : undefined
                           }
                         >
-                          {/* >= 48px visual & touch target halo */}
                           <circle
                             cx={0}
                             cy={0}
-                            r={16}
+                            r={18}
                             fill="rgba(11, 107, 93, 0.08)"
                             stroke="var(--brand)"
                             strokeWidth="1.5"
@@ -1990,34 +2111,49 @@ export function LetterLessonLoop({
                     );
                   })()}
 
-                {/* 4. FIX A & FIX B: Learner's snapped diamond dots stay visible in dark green (#07463D)
-                    with a 2px white outline and nested-group .dot-pop animation (never transform + CSS animation on same element) */}
-                {(placedDots || []).map((d, i) => (
-                  <g
-                    key={`placed_dot_${d.targetId ?? i}_${d.x}_${d.y}`}
-                    data-testid={`placed-dot-${i}`}
-                    transform={`translate(${d.x}, ${d.y}) rotate(45)`}
-                  >
+                {/* 4. Learner's snapped dots stay visible in dark green (#07463D) */}
+                {(placedDots || []).map((d, i) => {
+                  const fontDot = useFontRenderMode ? fontOutline.dots[i] : undefined;
+                  return (
                     <g
-                      className="dot-pop"
-                      style={{
-                        transformBox: 'fill-box',
-                        transformOrigin: 'center'
-                      }}
+                      key={`placed_dot_${d.targetId ?? i}_${d.x}_${d.y}`}
+                      data-testid={`placed-dot-${i}`}
+                      transform={`translate(${d.x}, ${d.y}) rotate(45)`}
                     >
-                      <rect
-                        x={-dotRectSide / 2}
-                        y={-dotRectSide / 2}
-                        width={dotRectSide}
-                        height={dotRectSide}
-                        rx="1.6"
-                        fill="#07463D"
-                        stroke="#FFFFFF"
-                        strokeWidth="2"
-                      />
+                      <g
+                        className="dot-pop"
+                        style={{
+                          transformBox: 'fill-box',
+                          transformOrigin: 'center'
+                        }}
+                      >
+                        {fontDot ? (
+                          <g
+                            transform={`rotate(-45) translate(${-fontDot.cx}, ${-fontDot.cy})`}
+                          >
+                            <path
+                              d={fontDot.path}
+                              fill="#07463D"
+                              stroke="#FFFFFF"
+                              strokeWidth="2"
+                            />
+                          </g>
+                        ) : (
+                          <rect
+                            x={-dotRectSide / 2}
+                            y={-dotRectSide / 2}
+                            width={dotRectSide}
+                            height={dotRectSide}
+                            rx="1.6"
+                            fill="#07463D"
+                            stroke="#FFFFFF"
+                            strokeWidth="2"
+                          />
+                        )}
+                      </g>
                     </g>
-                  </g>
-                ))}
+                  );
+                })}
               </svg>
 
               {/* Interactive Pointer Canvas (pointerdown ONLY for dots, ink STAYS after validation) */}
@@ -2046,7 +2182,7 @@ export function LetterLessonLoop({
                 className="min-h-[50px] px-2 py-1 rounded-[14px] bg-[var(--surface)] border border-[var(--line)] flex flex-col items-center justify-center gap-0.5 pressable cursor-pointer"
               >
                 <RotateCcw className="w-4 h-4 text-[var(--ink)] shrink-0" />
-                <span className="text-[11px] font-semibold text-[var(--ink)] leading-none whitespace-nowrap">
+                <span className="text-[13px] font-semibold text-[var(--ink)] leading-none whitespace-nowrap">
                   Effacer
                 </span>
               </button>
@@ -2059,7 +2195,7 @@ export function LetterLessonLoop({
                 className="min-h-[50px] px-2 py-1 rounded-[14px] bg-[var(--surface)] border border-[var(--line)] flex flex-col items-center justify-center gap-0.5 pressable cursor-pointer"
               >
                 <Play className="w-4 h-4 text-[var(--ink)] shrink-0" />
-                <span className="text-[11px] font-semibold text-[var(--ink)] leading-none whitespace-nowrap">
+                <span className="text-[13px] font-semibold text-[var(--ink)] leading-none whitespace-nowrap">
                   Animation
                 </span>
               </button>
@@ -2076,7 +2212,7 @@ export function LetterLessonLoop({
                 className="min-h-[50px] px-2 py-1 rounded-[14px] bg-[var(--surface)] border border-[var(--line)] flex flex-col items-center justify-center gap-0.5 pressable cursor-pointer"
               >
                 <Eye className="w-4 h-4 text-[var(--brand)] shrink-0" />
-                <span className="text-[11px] font-semibold text-[var(--ink)] leading-none whitespace-nowrap">
+                <span className="text-[13px] font-semibold text-[var(--ink)] leading-none whitespace-nowrap">
                   Guide ({traceMode}/3)
                 </span>
               </button>
@@ -2116,7 +2252,7 @@ export function LetterLessonLoop({
                   >
                     {letter.arabicChar}
                   </span>
-                  <span className="text-[11px] font-mono text-[#0B6B5D] mt-1">
+                  <span className="text-[13px] font-mono text-[#0B6B5D] mt-1">
                     Ligne d&apos;écriture
                   </span>
                 </div>
@@ -2319,7 +2455,7 @@ export function LetterLessonLoop({
                               >
                                 {opt.arabicWord}
                               </span>
-                              <span className="text-[12px] font-medium text-[var(--ink)]/75">
+                              <span className="text-[13px] font-medium text-[var(--ink)]/75">
                                 {opt.subLabelFr}
                               </span>
                             </div>
@@ -2429,13 +2565,13 @@ export function LetterLessonLoop({
                 <div className="font-display text-[20px] text-[var(--ink)]">
                   Score : {lastValidatedStroke.score} %
                 </div>
-                <div className="font-mono-tag text-[11px] text-[var(--ink)]/75">
+                <div className="font-mono-tag text-[13px] text-[var(--ink)]/75">
                   Couverture : {lastValidatedStroke.coverage} % · Hors guide :{' '}
                   {lastValidatedStroke.outside} %
                 </div>
               </div>
               <span
-                className={`px-3 py-1 rounded-full font-mono-tag text-[11px] font-bold ${
+                className={`px-3 py-1 rounded-full font-mono-tag text-[13px] font-bold ${
                   lastValidatedStroke.canSave
                     ? 'bg-[var(--good)]/15 text-[var(--good)]'
                     : 'bg-[var(--bad)]/15 text-[var(--bad)]'
@@ -2521,7 +2657,7 @@ export function LetterLessonLoop({
           {/* 10-attempt history strip */}
           {practiceHistory.length > 0 && (
             <div className="space-y-1.5">
-              <span className="font-mono-tag text-[11px] text-[var(--ink)]/70">
+              <span className="font-mono-tag text-[13px] text-[var(--ink)]/70">
                 HISTORIQUE (10 DERNIERS ESSAIS)
               </span>
               <div
@@ -2563,10 +2699,10 @@ export function LetterLessonLoop({
                     >
                       <MiniTracePreviewSvg points={att.points} size={32} />
                       <div className="flex flex-col items-start leading-tight">
-                        <span className="font-mono-tag text-[11px] font-bold text-[var(--good)]">
+                        <span className="font-mono-tag text-[13px] font-bold text-[var(--good)]">
                           {att.score}%
                         </span>
-                        <span className="text-[10px] text-[var(--ink)]/70">
+                        <span className="text-[13px] text-[var(--ink)]/70">
                           {att.date.slice(5)}
                         </span>
                       </div>
@@ -2593,27 +2729,38 @@ export function LetterLessonLoop({
             className="w-[144px] h-[144px] rounded-[24px] bg-[var(--paper)] border border-[var(--line)] flex items-center justify-center relative"
           >
             <svg viewBox={glyph.viewBox} className="w-full h-full">
-              {bodyStrokes.map((bs) => (
-                <path
-                  key={bs.id}
-                  d={bs.d}
-                  pathLength={1}
-                  fill="none"
-                  stroke="#07463D"
-                  strokeWidth={bs.width}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              ))}
-              {dotStrokes.map((ds) => (
-                <circle
-                  key={ds.id}
-                  cx={ds.at[0]}
-                  cy={ds.at[1]}
-                  r={ds.radius}
-                  fill="#07463D"
-                />
-              ))}
+              {useFontRenderMode ? (
+                <>
+                  <path d={fontOutline.bodyPath} fill="#07463D" />
+                  {fontOutline.dots.map((d, idx) => (
+                    <path key={idx} d={d.path} fill="#07463D" />
+                  ))}
+                </>
+              ) : (
+                <>
+                  {bodyStrokes.map((bs) => (
+                    <path
+                      key={bs.id}
+                      d={bs.d}
+                      pathLength={1}
+                      fill="none"
+                      stroke="#07463D"
+                      strokeWidth={bs.width}
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  ))}
+                  {dotStrokes.map((ds) => (
+                    <circle
+                      key={ds.id}
+                      cx={ds.at[0]}
+                      cy={ds.at[1]}
+                      r={ds.radius}
+                      fill="#07463D"
+                    />
+                  ))}
+                </>
+              )}
               {bodyStrokes[0] && (
                 <g
                   transform={`translate(${bodyStrokes[0].startDot[0]}, ${bodyStrokes[0].startDot[1]})`}
@@ -2643,6 +2790,50 @@ export function LetterLessonLoop({
             <div className="px-3.5 py-1.5 rounded-full bg-[var(--good)]/15 text-[var(--good)] font-mono-tag font-bold flex items-center gap-1.5 animate-pulse-once">
               <Flame className="w-4 h-4 fill-current" />
               <span>Série +1</span>
+            </div>
+          </div>
+
+          {/* Phase 4.5: One-tap rating (3 faces) saved with letterId and date */}
+          <div
+            data-testid="letter-rating-bar"
+            className="w-full rounded-[18px] bg-[var(--paper)] border border-[var(--line)] p-3 flex flex-col items-center gap-2"
+          >
+            <span className="text-[13px] font-bold text-[var(--ink)]">
+              Comment s&apos;est passée cette lettre ?
+            </span>
+            <div className="grid grid-cols-3 gap-2 w-full">
+              {(
+                [
+                  { id: 'good', face: '😊', label: 'Facile' },
+                  { id: 'neutral', face: '😐', label: 'Moyen' },
+                  { id: 'hard', face: '😕', label: 'Difficile' }
+                ] as const
+              ).map((item) => {
+                const selected = letterRating === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    data-testid={`letter-rating-btn-${item.id}`}
+                    aria-label={`Noter cette lettre : ${item.label}`}
+                    onClick={() => {
+                      setLetterRating(item.id);
+                      onRateLetter?.(letter.id, item.id);
+                      speechService.triggerHaptic('stroke_ok');
+                    }}
+                    className={`min-h-[48px] px-2 py-1.5 rounded-[14px] border-2 flex items-center justify-center gap-1.5 text-[13px] font-bold pressable cursor-pointer ${
+                      selected
+                        ? 'bg-[var(--brand)]/15 border-[var(--brand)] text-[var(--brand)]'
+                        : 'bg-[var(--surface)] border-[var(--line)] text-[var(--ink)]'
+                    }`}
+                  >
+                    <span className="text-[18px] leading-none" aria-hidden="true">
+                      {item.face}
+                    </span>
+                    <span>{item.label}</span>
+                  </button>
+                );
+              })}
             </div>
           </div>
 

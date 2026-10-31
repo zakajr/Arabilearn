@@ -7,12 +7,16 @@ import {
   PositionalFormKey,
   QuizQuestion,
   WordRecord,
+  buildPlacementQuestionsForFamily,
   filterWordsByUnlockedLetters,
 } from '../data/lettersAndFamilies';
 import { renderShareCardToCanvas } from '../lib/pdfAndImage';
 import {
   BlueprintState,
+  PlacementAnswerRecord,
   StepId,
+  applyPlacementTestResult,
+  deleteOldPhotosFromState,
   getCurrentWeekMondayIso,
   getDailyReviewQueue,
   getLearnedLetterIdsForUser,
@@ -25,6 +29,7 @@ import {
   isLetterUnlockedForUser,
   loadBlueprintState,
   saveBlueprintState,
+  saveLetterRating,
 } from '../services/dataService';
 import { speechService } from '../services/speech';
 import { MainTab } from '../components/BlueprintComponents';
@@ -129,8 +134,40 @@ export function useNouqtaState() {
     useState<boolean>(true);
   const [voiceSecElapsed, setVoiceSecElapsed] = useState<number>(0);
   const [voiceDataUrl, setVoiceDataUrl] = useState<string | null>(null);
+  const [voiceMicError, setVoiceMicError] = useState<string | null>(null);
   const voiceTimerRef = useRef<number | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+
+  // Phase 4.4: Storage full error state
+  const [storageFullError, setStorageFullError] = useState<boolean>(false);
+
+  // Phase 5: Placement test modal & state
+  const [showPlacementModal, setShowPlacementModal] = useState<boolean>(false);
+  const [placementStep, setPlacementStep] = useState<
+    'prompt' | 'intro' | 'questions' | 'result'
+  >('prompt');
+  const [placementSelectedChoice, setPlacementSelectedChoice] = useState<
+    'beginner' | 'experienced'
+  >('beginner');
+  const [placementFamilyIdx, setPlacementFamilyIdx] = useState<number>(0);
+  const [placementQuestionIdxInFamily, setPlacementQuestionIdxInFamily] =
+    useState<number>(0);
+  const [placementFamilyCorrectCount, setPlacementFamilyCorrectCount] =
+    useState<number>(0);
+  const [
+    placementConsecutiveFailedFamilies,
+    setPlacementConsecutiveFailedFamilies,
+  ] = useState<number>(0);
+  const [placementPassedFamilies, setPlacementPassedFamilies] = useState<
+    FamilyId[]
+  >([]);
+  const [placementAnswers, setPlacementAnswers] = useState<
+    PlacementAnswerRecord[]
+  >([]);
+  const [placementResultFamilyId, setPlacementResultFamilyId] =
+    useState<FamilyId>('F1');
+  const [placementStartLetterId, setPlacementStartLetterId] =
+    useState<string>('alif');
 
   // Album ("Mon cahier") Avant / Maintenant comparison sheet state
   const [albumCompareLetterId, setAlbumCompareLetterId] = useState<
@@ -213,19 +250,54 @@ export function useNouqtaState() {
     }, 2500);
   };
 
-  // Sync state to localStorage
+  // Sync state to localStorage and detect storage quota errors (Phase 4.4)
   useEffect(() => {
-    saveBlueprintState(state);
+    const ok = saveBlueprintState(state);
+    if (!ok) {
+      setStorageFullError(true);
+    }
   }, [state]);
 
-  // Show first-run onboarding if user hasn't completed it yet (and not in /dev/selftest)
+  const handleDeleteOldPhotos = () => {
+    const win = window as unknown as {
+      __NOUQTA_SIMULATE_STORAGE_FULL__?: boolean;
+    };
+    if (win.__NOUQTA_SIMULATE_STORAGE_FULL__) {
+      win.__NOUQTA_SIMULATE_STORAGE_FULL__ = false;
+    }
+    setState((prev) => {
+      const cleaned = deleteOldPhotosFromState(prev);
+      const ok = saveBlueprintState(cleaned);
+      if (ok) {
+        setStorageFullError(false);
+      }
+      return cleaned;
+    });
+    showToast('Anciennes photos supprimées.', 'good');
+  };
+
+  // Show first-launch prompt ("Où en es-tu ?") or onboarding if user hasn't completed it yet (Phase 5.1)
   useEffect(() => {
     if (isSelfTestRoute) return;
-    const done = Boolean((state.onboardingDoneUsers || {})[activeUser.id]);
-    if (!done) {
+    const promptSeen = Boolean(
+      (state.placementPromptSeen || {})[activeUser.id]
+    );
+    const onboardingDone = Boolean(
+      (state.onboardingDoneUsers || {})[activeUser.id]
+    );
+    if (!promptSeen && !onboardingDone) {
+      setPlacementSelectedChoice('beginner');
+      setPlacementStep('prompt');
+      setShowPlacementModal(true);
+    } else if (!onboardingDone) {
       setShowOnboardingModal(true);
     }
-  }, [activeUser.id, isSelfTestRoute, state.onboardingDoneUsers]);
+  }, [
+    activeUser.id,
+    isSelfTestRoute,
+    state.onboardingDoneUsers,
+    state.placementPromptSeen,
+  ]);
 
   // Sync lettersViewType default when user/mode changes
   useEffect(() => {
@@ -233,13 +305,14 @@ export function useNouqtaState() {
     setCertNameDraft(activeUser.displayName);
   }, [activeUser.id, mode]);
 
-  // Sync dark theme, sound, haptics & animations settings
+  // Sync dark theme, textScale (100/115/130), sound, haptics & animations settings
   const userSetting = state.settings.find((s) => s.userId === activeUser.id) || {
     userId: activeUser.id,
     theme: 'light' as const,
     sound: true,
     haptics: true,
     animations: true,
+    textScale: 100 as const,
     weeklyGoal: 3 as const,
     rhythm: 'normal' as const,
     voiceName: null,
@@ -254,11 +327,17 @@ export function useNouqtaState() {
       document.documentElement.removeAttribute('data-theme');
       document.documentElement.removeAttribute('class');
     }
+    const scalePct = userSetting.textScale || 100;
+    document.documentElement.setAttribute('data-text-scale', String(scalePct));
+    document.documentElement.style.fontSize = `${
+      Math.round(17 * (scalePct / 100) * 100) / 100
+    }px`;
     speechService.setMuted(!userSetting.sound);
     speechService.setHapticsEnabled(userSetting.haptics !== false);
     speechService.setPreferredVoice(userSetting.voiceName);
   }, [
     userSetting.theme,
+    userSetting.textScale,
     userSetting.sound,
     userSetting.haptics,
     userSetting.voiceName,
@@ -501,6 +580,8 @@ export function useNouqtaState() {
     setShowDailyReviewSheet(true);
   };
 
+  // Phase 4.4: Microphone denied or recording failed -> show clear message and block send button.
+  // Never use a fake placeholder audio string ('NOUQTA_VOICE_30S').
   const stopVoiceReadingRecording = () => {
     if (voiceTimerRef.current) {
       window.clearInterval(voiceTimerRef.current);
@@ -512,64 +593,257 @@ export function useNouqtaState() {
     ) {
       try {
         mediaRecorderRef.current.stop();
+        return;
       } catch {
-        // ignore
+        setVoiceMicError(
+          "L'enregistrement audio a échoué. Vérifie ton microphone et réessaie."
+        );
+        setVoiceDataUrl(null);
+        setVoiceRecStep('explain');
+        return;
       }
     }
-    setVoiceDataUrl((cur) => cur || 'data:audio/webm;base64,NOUQTA_VOICE_30S');
-    setVoiceRecStep('preview');
+    if (!voiceDataUrl) {
+      setVoiceMicError(
+        "Aucun son n'a pu être enregistré. Vérifie l'accès au microphone."
+      );
+      setVoiceRecStep('explain');
+    } else {
+      setVoiceRecStep('preview');
+    }
   };
 
   const startVoiceReadingRecording = async () => {
-    setVoiceRecStep('recording');
+    setVoiceMicError(null);
+    setVoiceDataUrl(null);
     setVoiceSecElapsed(0);
 
     try {
+      const win = window as unknown as {
+        __NOUQTA_SIMULATE_MIC_DENIED__?: boolean;
+      };
       if (
-        typeof navigator !== 'undefined' &&
-        navigator.mediaDevices?.getUserMedia &&
-        typeof MediaRecorder !== 'undefined'
+        win.__NOUQTA_SIMULATE_MIC_DENIED__ ||
+        typeof navigator === 'undefined' ||
+        !navigator.mediaDevices?.getUserMedia ||
+        typeof MediaRecorder === 'undefined'
       ) {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-          ? 'audio/webm;codecs=opus'
-          : MediaRecorder.isTypeSupported('audio/mp4')
-          ? 'audio/mp4'
-          : '';
-        const recorder = mimeType
-          ? new MediaRecorder(stream, { mimeType })
-          : new MediaRecorder(stream);
-        const chunks: BlobPart[] = [];
-        recorder.ondataavailable = (ev) => {
-          if (ev.data.size > 0) chunks.push(ev.data);
-        };
-        recorder.onstop = () => {
-          stream.getTracks().forEach((tr) => tr.stop());
-          const blob = new Blob(chunks, {
-            type: mimeType || 'audio/webm',
-          });
-          const reader = new FileReader();
-          reader.onloadend = () => {
-            setVoiceDataUrl(String(reader.result || 'data:audio/webm;base64,'));
-          };
-          reader.readAsDataURL(blob);
-        };
-        mediaRecorderRef.current = recorder;
-        recorder.start();
+        throw new Error('Microphone permission denied or unavailable');
       }
+
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : MediaRecorder.isTypeSupported('audio/mp4')
+        ? 'audio/mp4'
+        : '';
+      const recorder = mimeType
+        ? new MediaRecorder(stream, { mimeType })
+        : new MediaRecorder(stream);
+      const chunks: BlobPart[] = [];
+      recorder.ondataavailable = (ev) => {
+        if (ev.data.size > 0) chunks.push(ev.data);
+      };
+      recorder.onerror = () => {
+        stream.getTracks().forEach((tr) => tr.stop());
+        if (voiceTimerRef.current) {
+          window.clearInterval(voiceTimerRef.current);
+          voiceTimerRef.current = null;
+        }
+        setVoiceMicError(
+          "L'enregistrement a échoué. Autorise le microphone et réessaie."
+        );
+        setVoiceDataUrl(null);
+        setVoiceRecStep('explain');
+      };
+      recorder.onstop = () => {
+        stream.getTracks().forEach((tr) => tr.stop());
+        const blob = new Blob(chunks, {
+          type: mimeType || 'audio/webm',
+        });
+        if (blob.size === 0) {
+          setVoiceMicError(
+            "Aucun son détecté. Vérifie ton microphone avant d'envoyer."
+          );
+          setVoiceDataUrl(null);
+          setVoiceRecStep('explain');
+          return;
+        }
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          const resultStr = typeof reader.result === 'string' ? reader.result : '';
+          if (!resultStr || resultStr.length < 32) {
+            setVoiceMicError(
+              "Enregistrement audio invalide. Réessaie avec le microphone activé."
+            );
+            setVoiceDataUrl(null);
+            setVoiceRecStep('explain');
+          } else {
+            setVoiceDataUrl(resultStr);
+            setVoiceRecStep('preview');
+          }
+        };
+        reader.readAsDataURL(blob);
+      };
+      mediaRecorderRef.current = recorder;
+      recorder.start();
+      setVoiceRecStep('recording');
+
+      if (voiceTimerRef.current) window.clearInterval(voiceTimerRef.current);
+      let sec = 0;
+      voiceTimerRef.current = window.setInterval(() => {
+        sec += 1;
+        setVoiceSecElapsed(sec);
+        if (sec >= 30) {
+          stopVoiceReadingRecording();
+        }
+      }, 1000);
     } catch {
-      // Fallback simulated audio capture when mic permission is unavailable
+      if (voiceTimerRef.current) {
+        window.clearInterval(voiceTimerRef.current);
+        voiceTimerRef.current = null;
+      }
+      setVoiceMicError(
+        "Microphone refusé ou indisponible : autorise l'accès au micro dans ton navigateur pour enregistrer ta lecture."
+      );
+      setVoiceDataUrl(null);
+      setVoiceRecStep('explain');
+    }
+  };
+
+  const rateLetter = (
+    letterId: string,
+    rating: 'good' | 'neutral' | 'hard'
+  ) => {
+    setState((prev) => saveLetterRating(prev, activeUser.id, letterId, rating));
+  };
+
+  // Phase 5: Placement test flow handlers
+  const placementCurrentFamily =
+    LETTER_FAMILIES[
+      Math.min(placementFamilyIdx, LETTER_FAMILIES.length - 1)
+    ] || LETTER_FAMILIES[0];
+  const placementFamilyQuestions = buildPlacementQuestionsForFamily(
+    placementCurrentFamily.id,
+    letters
+  );
+  const placementCurrentQuestion =
+    placementFamilyQuestions[
+      Math.min(
+        placementQuestionIdxInFamily,
+        placementFamilyQuestions.length - 1
+      )
+    ] || placementFamilyQuestions[0];
+
+  const openPlacementTestFromSettings = () => {
+    setPlacementSelectedChoice('experienced');
+    setPlacementStep('intro');
+    setShowPlacementModal(true);
+  };
+
+  const choosePlacementBeginner = () => {
+    setShowPlacementModal(false);
+    setState((prev) => ({
+      ...prev,
+      placementPromptSeen: {
+        ...(prev.placementPromptSeen || {}),
+        [activeUser.id]: true,
+      },
+    }));
+    const onboardingDone = Boolean(
+      (state.onboardingDoneUsers || {})[activeUser.id]
+    );
+    if (!onboardingDone) {
+      setOnboardingScreenIdx(0);
+      setShowOnboardingModal(true);
+    }
+  };
+
+  const choosePlacementExperienced = () => {
+    setPlacementSelectedChoice('experienced');
+    setPlacementStep('intro');
+  };
+
+  const startPlacementQuestions = () => {
+    setPlacementFamilyIdx(0);
+    setPlacementQuestionIdxInFamily(0);
+    setPlacementFamilyCorrectCount(0);
+    setPlacementConsecutiveFailedFamilies(0);
+    setPlacementPassedFamilies([]);
+    setPlacementAnswers([]);
+    setPlacementStep('questions');
+  };
+
+  const skipPlacementTest = () => {
+    choosePlacementBeginner();
+  };
+
+  const answerPlacementQuestion = (
+    selectedOptionIdx: number | 'dont_know'
+  ) => {
+    if (!placementCurrentQuestion) return;
+    const isDontKnow = selectedOptionIdx === 'dont_know';
+    const isCorrect =
+      !isDontKnow && selectedOptionIdx === placementCurrentQuestion.correctIndex;
+
+    if (isCorrect) {
+      speechService.triggerSuccessFeedback('step_ok');
+    } else {
+      speechService.triggerHaptic('error');
     }
 
-    if (voiceTimerRef.current) window.clearInterval(voiceTimerRef.current);
-    let sec = 0;
-    voiceTimerRef.current = window.setInterval(() => {
-      sec += 1;
-      setVoiceSecElapsed(sec);
-      if (sec >= 30) {
-        stopVoiceReadingRecording();
-      }
-    }, 1000);
+    const nextAnswers: PlacementAnswerRecord[] = [
+      ...placementAnswers,
+      {
+        familyId: placementCurrentFamily.id,
+        questionId: placementCurrentQuestion.id,
+        correct: isCorrect,
+        dontKnow: isDontKnow,
+      },
+    ];
+    setPlacementAnswers(nextAnswers);
+
+    const nextFamCorrect = placementFamilyCorrectCount + (isCorrect ? 1 : 0);
+
+    // If not yet at the 3rd question of this family, advance within the family
+    if (placementQuestionIdxInFamily < 2 && nextAnswers.length < 12) {
+      setPlacementFamilyCorrectCount(nextFamCorrect);
+      setPlacementQuestionIdxInFamily((q) => q + 1);
+      return;
+    }
+
+    // Finished the 3 questions of the current family
+    const familyPassed = nextFamCorrect >= 2;
+    const nextPassedFamilies = familyPassed
+      ? [...placementPassedFamilies, placementCurrentFamily.id]
+      : [...placementPassedFamilies];
+    const nextConsecutiveFailed = familyPassed
+      ? 0
+      : placementConsecutiveFailedFamilies + 1;
+
+    setPlacementPassedFamilies(nextPassedFamilies);
+    setPlacementConsecutiveFailedFamilies(nextConsecutiveFailed);
+
+    const reachedMaxQuestions = nextAnswers.length >= 12;
+    const reachedTwoFailedFamilies = nextConsecutiveFailed >= 2;
+    const isLastFamily = placementFamilyIdx >= LETTER_FAMILIES.length - 1;
+
+    if (reachedMaxQuestions || reachedTwoFailedFamilies || isLastFamily) {
+      const applied = applyPlacementTestResult(
+        state,
+        activeUser.id,
+        nextPassedFamilies,
+        nextAnswers
+      );
+      setState(applied.nextState);
+      setPlacementResultFamilyId(applied.resultFamilyId);
+      setPlacementStartLetterId(applied.startLetter.id);
+      setPlacementStep('result');
+    } else {
+      setPlacementFamilyIdx((f) => f + 1);
+      setPlacementQuestionIdxInFamily(0);
+      setPlacementFamilyCorrectCount(0);
+    }
   };
 
   const finishOnboarding = () => {
@@ -577,6 +851,10 @@ export function useNouqtaState() {
     setShowCoachMarkOnHome(true);
     setState((prev) => ({
       ...prev,
+      placementPromptSeen: {
+        ...(prev.placementPromptSeen || {}),
+        [activeUser.id]: true,
+      },
       onboardingDoneUsers: {
         ...(prev.onboardingDoneUsers || {}),
         [activeUser.id]: true,
@@ -676,6 +954,32 @@ export function useNouqtaState() {
     setVoiceSecElapsed,
     voiceDataUrl,
     setVoiceDataUrl,
+    voiceMicError,
+    setVoiceMicError,
+    storageFullError,
+    setStorageFullError,
+    handleDeleteOldPhotos,
+    rateLetter,
+    showPlacementModal,
+    setShowPlacementModal,
+    placementStep,
+    setPlacementStep,
+    placementSelectedChoice,
+    setPlacementSelectedChoice,
+    placementFamilyIdx,
+    placementQuestionIdxInFamily,
+    placementAnswers,
+    placementPassedFamilies,
+    placementResultFamilyId,
+    placementStartLetterId,
+    placementCurrentFamily,
+    placementCurrentQuestion,
+    openPlacementTestFromSettings,
+    choosePlacementBeginner,
+    choosePlacementExperienced,
+    startPlacementQuestions,
+    skipPlacementTest,
+    answerPlacementQuestion,
     albumCompareLetterId,
     setAlbumCompareLetterId,
     albumSliderPct,

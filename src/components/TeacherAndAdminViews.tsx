@@ -286,7 +286,7 @@ export function TeacherPanelView({
             <span>Corrections</span>
             <span
               data-testid="teacher-pending-counter"
-              className="px-2 py-0.5 rounded-full bg-[var(--accent)] text-[var(--accent-ink)] font-mono-tag text-[11px] font-bold"
+              className="px-2 py-0.5 rounded-full bg-[var(--accent)] text-[var(--accent-ink)] font-mono-tag text-[13px] font-bold"
             >
               {pendingCount}
             </span>
@@ -369,7 +369,7 @@ export function TeacherPanelView({
                     key={tab.id}
                     type="button"
                     onClick={() => setQueueFilter(tab.id)}
-                    className={`min-h-[48px] h-[48px] rounded-[14px] text-[12px] font-bold cursor-pointer ${
+                    className={`min-h-[48px] h-[48px] rounded-[14px] text-[13px] font-bold cursor-pointer ${
                       queueFilter === tab.id
                         ? 'bg-[var(--brand-deep)] text-white'
                         : 'text-[var(--ink)]/70'
@@ -423,7 +423,7 @@ export function TeacherPanelView({
                               </span>
                               )
                             </div>
-                            <div className="text-[12px] text-[var(--ink)]/70">
+                            <div className="text-[13px] text-[var(--ink)]/70">
                               {isAudio ? 'Lecture vocale' : 'Photo écriture'} ·{' '}
                               {sub.createdAt}
                             </div>
@@ -655,7 +655,7 @@ export function TeacherPanelView({
                             data-testid="teacher-voice-reply-btn"
                             aria-label="Enregistrer une réponse vocale de 15 secondes"
                             onClick={handleToggleVoiceReply}
-                            className={`min-h-[48px] h-[48px] px-3 rounded-[14px] border text-[12px] font-bold flex items-center gap-1.5 pressable cursor-pointer shrink-0 ${
+                            className={`min-h-[48px] h-[48px] px-3 rounded-[14px] border text-[13px] font-bold flex items-center gap-1.5 pressable cursor-pointer shrink-0 ${
                               voiceReplyRef
                                 ? 'bg-[var(--good)]/15 border-[var(--good)] text-[var(--good)]'
                                 : isRecordingVoiceReply
@@ -752,6 +752,10 @@ export function TeacherPanelView({
                 const doneLetters = stuProg.filter(
                   (p) => p.stepsDone.length === 5
                 ).length;
+                const placedByTestRecord = state.placement?.[stu.id];
+                const placedLettersCount = stuProg.filter(
+                  (p) => p.source === 'placement'
+                ).length;
                 const familyRatios = LETTER_FAMILIES.map((f) => {
                   const doneInFam = f.letters.filter((lid) =>
                     stuProg.some(
@@ -770,9 +774,22 @@ export function TeacherPanelView({
                   <div className="rounded-[28px] bg-[var(--surface)] border border-[var(--line)] p-6 space-y-5">
                     <div className="flex flex-wrap items-center justify-between gap-4">
                       <div>
-                        <h2 className="font-display text-[26px]">
-                          {stu.displayName}
-                        </h2>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <h2 className="font-display text-[26px]">
+                            {stu.displayName}
+                          </h2>
+                          {(placedByTestRecord || placedLettersCount > 0) && (
+                            <span
+                              data-testid="teacher-placed-by-test-badge"
+                              className="px-3 py-1 rounded-full bg-[var(--accent)]/20 text-[var(--accent-ink)] dark:text-[var(--accent)] font-mono-tag text-[13px] font-bold"
+                            >
+                              Placé par test
+                              {placedByTestRecord
+                                ? ` (${placedByTestRecord.resultFamilyId})`
+                                : ''}
+                            </span>
+                          )}
+                        </div>
                         <p className="text-[14px] text-[var(--ink)]/75">
                           Série : {streak} jours · {stu.email}
                         </p>
@@ -1130,7 +1147,7 @@ export function AdminPanelView({
                   <span className="font-mono-tag text-[14px] font-bold text-[var(--ink)]">
                     {c.code}
                   </span>
-                  <span className="ml-2 text-[12px] text-[var(--ink)]/70">
+                  <span className="ml-2 text-[13px] text-[var(--ink)]/70">
                     {c.usedBy ? `Utilisé (${c.usedBy})` : 'Disponible'}
                   </span>
                 </div>
@@ -1171,7 +1188,7 @@ export function AdminPanelView({
               >
                 <div>
                   <div className="font-bold text-[15px]">{u.displayName}</div>
-                  <div className="text-[12px] text-[var(--ink)]/70">
+                  <div className="text-[13px] text-[var(--ink)]/70">
                     {u.email} · {u.entitlement === 'full' ? 'Complet' : 'Gratuit (F1)'}
                   </div>
                 </div>
@@ -1180,14 +1197,14 @@ export function AdminPanelView({
                   <button
                     type="button"
                     onClick={() => onToggleUserEntitlement(u.id)}
-                    className="min-h-[44px] px-3 rounded-lg bg-[var(--brand-deep)] text-white text-[12px] font-semibold cursor-pointer"
+                    className="min-h-[48px] px-3 rounded-lg bg-[var(--brand-deep)] text-white text-[13px] font-semibold cursor-pointer"
                   >
                     {u.entitlement === 'full' ? 'Passer Gratuit' : 'Débloquer Tout'}
                   </button>
                   <button
                     type="button"
                     onClick={() => onResetUserProgress(u.id)}
-                    className="min-h-[44px] px-2.5 rounded-lg border border-[var(--line)] text-[12px] font-semibold cursor-pointer"
+                    className="min-h-[48px] px-2.5 rounded-lg border border-[var(--line)] text-[13px] font-semibold cursor-pointer"
                   >
                     RAZ
                   </button>
@@ -1196,7 +1213,7 @@ export function AdminPanelView({
                       type="button"
                       aria-label={`Supprimer ${u.displayName}`}
                       onClick={() => onDeleteUser(u.id)}
-                      className="min-h-[44px] px-2 text-[var(--bad)] cursor-pointer"
+                      className="min-h-[48px] px-2 text-[var(--bad)] cursor-pointer"
                     >
                       <Trash2 className="w-4 h-4" />
                     </button>

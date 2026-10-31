@@ -25,8 +25,8 @@ import {
   HARAKAT_MINI_LESSON_CARDS,
   LETTER_FAMILIES,
   LetterRecord,
+  buildDynamicVowelQuizQuestions,
   buildFamilyExamQuestions,
-  buildVariedQuizSequence,
   getPositionalFormsForLetter,
   splitArabicWordIntoLetterTiles,
 } from '../data/lettersAndFamilies';
@@ -38,6 +38,7 @@ import {
 import {
   StepId,
   advanceReviewBox,
+  formatFrenchShortDate,
   getTodayIsoDate,
   isLetterUnlockedForUser,
   markDailyMissionDone,
@@ -118,6 +119,8 @@ export function SheetsAndModals({ app }: { app: NouqtaAppController }) {
     setVoiceSecElapsed,
     voiceDataUrl,
     setVoiceDataUrl,
+    voiceMicError,
+    setVoiceMicError,
     startVoiceReadingRecording,
     stopVoiceReadingRecording,
     showAccesSheet,
@@ -152,10 +155,336 @@ export function SheetsAndModals({ app }: { app: NouqtaAppController }) {
     setAntWalkingFamilyId,
     getLetterStatus,
     showToast,
+    rateLetter,
+    showPlacementModal,
+    setShowPlacementModal,
+    placementStep,
+    placementCurrentQuestion,
+    placementQuestionsTotal,
+    placementResultFamilyId,
+    choosePlacementBeginner,
+    choosePlacementExperienced,
+    startPlacementQuestions,
+    skipPlacementTest,
+    answerPlacementQuestion,
   } = app;
 
   return (
     <>
+      {/* PHASE 5: FIRST-LAUNCH / RETAKE PLACEMENT TEST MODAL ("Où en es-tu ?") */}
+      {showPlacementModal && !isSelfTestRoute && !showOnboardingModal && (
+        <div
+          data-testid="placement-test-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Test de positionnement"
+          className="fixed inset-0 z-50 bg-[var(--paper)] text-[var(--ink)] flex flex-col justify-between max-w-[480px] mx-auto p-[20px] overflow-y-auto"
+        >
+          {placementStep === 'prompt' && (
+            <>
+              <div className="flex items-center justify-between">
+                <span className="font-mono-tag text-[var(--brand)] font-bold">
+                  POINT DE DÉPART
+                </span>
+                <button
+                  type="button"
+                  data-testid="placement-prompt-close-btn"
+                  aria-label="Passer et commencer au début"
+                  onClick={choosePlacementBeginner}
+                  className="min-h-[48px] h-[48px] px-4 rounded-full bg-[var(--surface)] border border-[var(--line)] font-semibold text-[14px] text-[var(--ink)] pressable cursor-pointer"
+                >
+                  Passer
+                </button>
+              </div>
+
+              <div className="my-auto space-y-5 py-4">
+                <div className="flex justify-center">
+                  <Mascot pose="wave" size={76} mode="kids" />
+                </div>
+                <div className="text-center space-y-2">
+                  <h1 className="font-display text-[30px] text-[var(--ink)]">
+                    Où en es-tu ?
+                  </h1>
+                  <p className="text-[15px] text-[var(--ink)]/80">
+                    Choisis ton point de départ pour adapter tes leçons.
+                  </p>
+                </div>
+
+                <div className="space-y-3 pt-2">
+                  <button
+                    type="button"
+                    data-testid="placement-card-debute"
+                    onClick={choosePlacementBeginner}
+                    className={`w-full min-h-[104px] p-5 rounded-[24px] border-2 text-left flex flex-col justify-between gap-2 pressable cursor-pointer ${
+                      mode === 'kids'
+                        ? 'bg-[var(--brand)]/10 border-[var(--brand)]'
+                        : 'bg-[var(--surface)] border-[var(--line)]'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-display text-[22px] text-[var(--ink)]">
+                        Je débute
+                      </span>
+                      {mode === 'kids' && (
+                        <span
+                          data-testid="placement-kids-preselected-badge"
+                          className="px-2.5 py-1 rounded-full bg-[var(--brand-deep)] text-white font-mono-tag text-[13px] font-bold"
+                        >
+                          Recommandé
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[14px] text-[var(--ink)]/80">
+                      Je commence à la Famille 1, lettre Alif, pas à pas.
+                    </p>
+                  </button>
+
+                  <button
+                    type="button"
+                    data-testid="placement-card-connais"
+                    onClick={choosePlacementExperienced}
+                    className="w-full min-h-[104px] p-5 rounded-[24px] border-2 border-[var(--line)] bg-[var(--surface)] text-left flex flex-col justify-between gap-2 pressable cursor-pointer"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-display text-[22px] text-[var(--ink)]">
+                        Je connais un peu l&apos;arabe
+                      </span>
+                    </div>
+                    <p className="text-[14px] text-[var(--ink)]/80">
+                      Je passe un court test pour démarrer directement à mon niveau.
+                    </p>
+                  </button>
+                </div>
+              </div>
+
+              <div />
+            </>
+          )}
+
+          {placementStep === 'intro' && (
+            <>
+              <div className="flex items-center justify-between">
+                <span className="font-mono-tag text-[var(--brand)] font-bold">
+                  MINI-TEST DE NIVEAU
+                </span>
+              </div>
+
+              <div className="my-auto text-center space-y-5 py-6">
+                <div className="flex justify-center">
+                  <Mascot pose="think" size={80} mode="kids" />
+                </div>
+                <h1
+                  data-testid="placement-intro-title"
+                  className="font-display text-[28px] text-[var(--ink)]"
+                >
+                  2 minutes, 12 questions, sans stress
+                </h1>
+                <p className="text-[15px] text-[var(--ink)]/80 max-w-[340px] mx-auto">
+                  On vérifie les familles de lettres une par une. Tu peux toucher
+                  « Je ne sais pas » à tout moment.
+                </p>
+              </div>
+
+              <div className="space-y-2.5">
+                <PrimaryButton
+                  data-testid="placement-start-btn"
+                  onClick={startPlacementQuestions}
+                >
+                  Commencer
+                </PrimaryButton>
+                <SecondaryButton
+                  data-testid="placement-skip-btn"
+                  onClick={skipPlacementTest}
+                >
+                  Passer
+                </SecondaryButton>
+              </div>
+            </>
+          )}
+
+          {placementStep === 'questions' && placementCurrentQuestion && (
+            <>
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-mono-tag text-[var(--brand)] font-bold">
+                  FAMILLE {placementCurrentQuestion.familyId} · QUESTION{' '}
+                  {placementQuestionsTotal + 1} / 12
+                </span>
+                <button
+                  type="button"
+                  data-testid="placement-skip-in-quiz-btn"
+                  onClick={skipPlacementTest}
+                  className="min-h-[48px] h-[48px] px-3.5 rounded-full bg-[var(--surface)] border border-[var(--line)] font-semibold text-[13px] text-[var(--ink)] pressable cursor-pointer"
+                >
+                  Passer
+                </button>
+              </div>
+
+              <div className="my-auto space-y-5 py-4">
+                <div className="text-center space-y-3">
+                  <h2
+                    data-testid="placement-question-prompt"
+                    className="font-display text-[23px] text-[var(--ink)]"
+                  >
+                    {placementCurrentQuestion.promptFr}
+                  </h2>
+
+                  {placementCurrentQuestion.audioText && (
+                    <div className="flex justify-center">
+                      <button
+                        type="button"
+                        data-testid="placement-audio-btn"
+                        aria-label="Écouter la lettre"
+                        onClick={() =>
+                          speechService.speakArabic(
+                            placementCurrentQuestion.audioText!
+                          )
+                        }
+                        className="min-w-[64px] min-h-[64px] w-16 h-16 rounded-full bg-[var(--brand-deep)] text-white flex items-center justify-center shadow-md pressable cursor-pointer"
+                      >
+                        <Volume2 className="w-7 h-7" />
+                      </button>
+                    </div>
+                  )}
+
+                  {placementCurrentQuestion.promptArabic && (
+                    <div
+                      lang="ar"
+                      dir="rtl"
+                      style={{ lineHeight: 1.85 }}
+                      className="font-arabic text-[68px] text-[var(--brand-deep)] dark:text-[var(--ink)] select-none"
+                    >
+                      {placementCurrentQuestion.promptArabic}
+                    </div>
+                  )}
+                </div>
+
+                <div className="space-y-2.5">
+                  {placementCurrentQuestion.options.map((opt, idx) => (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      data-testid={`placement-option-${idx}`}
+                      onClick={() => answerPlacementQuestion(idx)}
+                      className="w-full min-h-[60px] px-4 py-2.5 rounded-[18px] bg-[var(--surface)] border-2 border-[var(--line)] flex items-center justify-center pressable cursor-pointer"
+                    >
+                      <span
+                        lang={opt.isArabic ? 'ar' : 'fr'}
+                        dir={opt.isArabic ? 'rtl' : 'ltr'}
+                        className={
+                          opt.isArabic
+                            ? 'font-arabic text-[38px] leading-none text-[var(--ink)]'
+                            : 'font-bold text-[17px] text-[var(--ink)]'
+                        }
+                      >
+                        {opt.label}
+                      </span>
+                    </button>
+                  ))}
+
+                  <button
+                    type="button"
+                    data-testid="placement-dont-know-btn"
+                    onClick={() => answerPlacementQuestion(null)}
+                    className="w-full min-h-[52px] h-[52px] px-4 rounded-[16px] bg-transparent border border-[var(--line)] text-[var(--ink)]/75 font-semibold text-[15px] flex items-center justify-center pressable cursor-pointer"
+                  >
+                    Je ne sais pas
+                  </button>
+                </div>
+              </div>
+
+              <div />
+            </>
+          )}
+
+          {placementStep === 'result' &&
+            (() => {
+              const resFam =
+                LETTER_FAMILIES.find((f) => f.id === placementResultFamilyId) ||
+                LETTER_FAMILIES[0];
+              const resFirstLetter =
+                letters.find((l) => l.id === resFam.letters[0]) || letters[0];
+              const isPaywalledResult =
+                activeUser.entitlement === 'free' && resFam.id !== 'F1';
+
+              return (
+                <>
+                  <div className="flex items-center justify-between">
+                    <span className="font-mono-tag text-[var(--brand)] font-bold">
+                      RÉSULTAT DU TEST
+                    </span>
+                  </div>
+
+                  <div className="my-auto text-center space-y-4 py-4">
+                    <div className="flex justify-center">
+                      <Mascot pose="cheer" size={84} mode="kids" />
+                    </div>
+                    <h1
+                      data-testid="placement-result-heading"
+                      className="font-display text-[26px] text-[var(--ink)]"
+                    >
+                      Tu peux commencer à : Famille {resFam.order}, lettre{' '}
+                      {resFirstLetter.shortName || resFirstLetter.nameFr}
+                    </h1>
+                    <div
+                      lang="ar"
+                      dir="rtl"
+                      className="font-arabic text-[64px] text-[var(--brand-deep)] dark:text-[var(--ink)] leading-none"
+                    >
+                      {resFirstLetter.arabicChar}
+                    </div>
+
+                    {isPaywalledResult && (
+                      <div
+                        data-testid="placement-paywall-notice"
+                        className="p-4 rounded-[20px] bg-[var(--accent)]/15 border border-[var(--accent)] text-left space-y-1.5"
+                      >
+                        <div className="font-bold text-[15px] text-[var(--ink)]">
+                          Tu es prêt pour la famille {resFam.order} ({resFam.nameFr})
+                        </div>
+                        <p className="text-[13px] text-[var(--ink)]/80">
+                          Les familles précédentes sont marquées comme acquises.
+                          Débloque le cours complet pour accéder directement à la
+                          famille {resFam.order}.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="space-y-2.5">
+                    {isPaywalledResult ? (
+                      <>
+                        <PrimaryButton
+                          data-testid="placement-open-unlock-btn"
+                          onClick={() => {
+                            setShowPlacementModal(false);
+                            setActivationError(null);
+                            setShowAccesSheet(true);
+                          }}
+                        >
+                          Débloquer la famille {resFam.order}
+                        </PrimaryButton>
+                        <SecondaryButton
+                          data-testid="placement-stay-free-btn"
+                          onClick={() => setShowPlacementModal(false)}
+                        >
+                          Rester sur la Famille 1 gratuite
+                        </SecondaryButton>
+                      </>
+                    ) : (
+                      <PrimaryButton
+                        data-testid="placement-finish-btn"
+                        onClick={() => setShowPlacementModal(false)}
+                      >
+                        Continuer
+                      </PrimaryButton>
+                    )}
+                  </div>
+                </>
+              );
+            })()}
+        </div>
+      )}
+
       {/* FIRST-RUN ONBOARDING MODAL */}
       {showOnboardingModal && !isSelfTestRoute && (
         <div
@@ -214,7 +543,7 @@ export function SheetsAndModals({ app }: { app: NouqtaAppController }) {
                         <div className="w-10 h-10 rounded-full bg-[var(--brand-deep)] text-white flex items-center justify-center">
                           <Icon className="w-5 h-5" />
                         </div>
-                        <span className="text-[12px] font-bold text-[var(--ink)]">
+                        <span className="text-[13px] font-bold text-[var(--ink)]">
                           {st.word}
                         </span>
                       </div>
@@ -252,7 +581,7 @@ export function SheetsAndModals({ app }: { app: NouqtaAppController }) {
                       key={`${d}_${idx}`}
                       className="flex flex-col items-center gap-1"
                     >
-                      <span className="text-[11px] font-bold text-[var(--ink)]/70">
+                      <span className="text-[13px] font-bold text-[var(--ink)]/70">
                         {d}
                       </span>
                       <div
@@ -376,7 +705,7 @@ export function SheetsAndModals({ app }: { app: NouqtaAppController }) {
                 <div className="font-display text-[26px] leading-none text-[var(--ink)]">
                   {userStreak} j
                 </div>
-                <div className="text-[12px] font-semibold text-[var(--ink)]/75 mt-1">
+                <div className="text-[13px] font-semibold text-[var(--ink)]/75 mt-1">
                   Série actuelle
                 </div>
               </div>
@@ -388,7 +717,7 @@ export function SheetsAndModals({ app }: { app: NouqtaAppController }) {
                 <div className="font-display text-[26px] leading-none text-[var(--ink)]">
                   {bestStreak} j
                 </div>
-                <div className="text-[12px] font-semibold text-[var(--ink)]/75 mt-1">
+                <div className="text-[13px] font-semibold text-[var(--ink)]/75 mt-1">
                   Meilleure série
                 </div>
               </div>
@@ -412,7 +741,7 @@ export function SheetsAndModals({ app }: { app: NouqtaAppController }) {
                       key={dayLabel}
                       className="flex flex-col items-center gap-1.5"
                     >
-                      <span className="text-[11px] font-semibold text-[var(--ink)]/75">
+                      <span className="text-[13px] font-semibold text-[var(--ink)]/75">
                         {dayLabel}
                       </span>
                       <div
@@ -449,7 +778,7 @@ export function SheetsAndModals({ app }: { app: NouqtaAppController }) {
                 </div>
               </div>
             </div>
-            <span className="px-3 py-1 rounded-full bg-[var(--good)]/15 text-[var(--good)] font-mono-tag text-[11px] font-bold shrink-0">
+            <span className="px-3 py-1 rounded-full bg-[var(--good)]/15 text-[var(--good)] font-mono-tag text-[13px] font-bold shrink-0">
               {streakObj.repairUsedWeek ? 'UTILISÉ' : 'DISPONIBLE'}
             </span>
           </div>
@@ -707,7 +1036,7 @@ export function SheetsAndModals({ app }: { app: NouqtaAppController }) {
             return (
               <div data-testid="letter-formes-sheet" className="space-y-4">
                 {!letter.connects && (
-                  <div className="px-3.5 py-2 rounded-[14px] bg-[var(--accent)]/15 border border-[var(--accent)]/40 text-[12px] font-semibold text-[var(--ink)]">
+                  <div className="px-3.5 py-2 rounded-[14px] bg-[var(--accent)]/15 border border-[var(--accent)]/40 text-[13px] font-semibold text-[var(--ink)]">
                     Cette lettre ne s&apos;attache pas à gauche : elle possède
                     uniquement les formes <strong>Isolée</strong> et{' '}
                     <strong>Fin</strong>.
@@ -729,7 +1058,7 @@ export function SheetsAndModals({ app }: { app: NouqtaAppController }) {
                         setSelectedFormKey(f.key);
                         setFormAnimTick((c) => c + 1);
                       }}
-                      className={`min-h-[56px] p-2 rounded-[16px] border-2 flex flex-col items-center justify-center pressable cursor-pointer ${
+                      className={`min-h-[60px] p-2 rounded-[16px] border-2 flex flex-col items-center justify-center pressable cursor-pointer ${
                         activeForm.key === f.key
                           ? 'border-[var(--brand)] bg-[var(--brand)]/10 text-[var(--ink)]'
                           : 'border-[var(--line)] bg-[var(--paper)] text-[var(--ink)]/75'
@@ -742,25 +1071,51 @@ export function SheetsAndModals({ app }: { app: NouqtaAppController }) {
                       >
                         {f.arabicDisplay}
                       </span>
-                      <span className="text-[11px] font-bold mt-1">
+                      <span className="text-[13px] font-bold mt-1">
                         {f.labelFr}
                       </span>
                     </button>
                   ))}
                 </div>
 
-                <div className="w-full h-[180px] rounded-[22px] bg-[var(--paper)] border-2 border-[var(--line)] flex flex-col items-center justify-center relative">
-                  {activeForm.isDraft && (
-                    <span className="absolute top-2.5 left-3 px-2.5 py-0.5 rounded-full bg-[var(--accent)]/20 text-[var(--accent-ink)] dark:text-[var(--accent)] font-mono-tag text-[10px] font-bold">
-                      TRACÉ BROUILLON
-                    </span>
+                {/* PHASE 1.7: Positional forms rendered with Naskh font outline method + contextual display */}
+                <div className="w-full h-[184px] rounded-[22px] bg-[var(--paper)] border-2 border-[var(--line)] flex items-center justify-around px-4 relative">
+                  {activeForm.bodyPath && (
+                    <svg
+                      key={`svg_${activeForm.key}_${formAnimTick}`}
+                      viewBox="0 0 200 200"
+                      data-testid={`forme-naskh-svg-${activeForm.key}`}
+                      className="w-[136px] h-[136px] shrink-0"
+                    >
+                      <line
+                        x1="20"
+                        y1={activeForm.baseline || 125}
+                        x2="180"
+                        y2={activeForm.baseline || 125}
+                        stroke="var(--line)"
+                        strokeWidth="1.5"
+                        strokeDasharray="4 4"
+                      />
+                      <path
+                        d={activeForm.bodyPath}
+                        fill="#07463D"
+                        fillRule="nonzero"
+                      />
+                      {(activeForm.dots || []).map((dt, dIdx) => (
+                        <path
+                          key={`fdot_${dIdx}`}
+                          d={dt.path}
+                          fill="#07463D"
+                        />
+                      ))}
+                    </svg>
                   )}
                   <span
                     key={`${activeForm.key}_${formAnimTick}`}
                     lang="ar"
                     dir="rtl"
                     style={{ lineHeight: 1.9 }}
-                    className="font-arabic text-[84px] text-[var(--brand-deep)] dark:text-[var(--ink)]"
+                    className="font-arabic text-[72px] text-[var(--brand-deep)] dark:text-[var(--ink)]"
                   >
                     {activeForm.arabicDisplay}
                   </span>
@@ -770,7 +1125,7 @@ export function SheetsAndModals({ app }: { app: NouqtaAppController }) {
                   <div className="flex items-center gap-3">
                     <span className="text-[32px]">{letter.picture}</span>
                     <div>
-                      <span className="text-[12px] font-mono-tag text-[var(--brand)] block">
+                      <span className="text-[13px] font-mono-tag text-[var(--brand)] block">
                         MOT-CLÉ AVEC LETTRE SURLIGNÉE
                       </span>
                       <span className="text-[14px] font-bold text-[var(--ink)]">
@@ -810,7 +1165,7 @@ export function SheetsAndModals({ app }: { app: NouqtaAppController }) {
                 <span className="font-mono-tag text-[var(--brand)] font-bold">
                   CARTE {harakatCardIdx + 1} / {HARAKAT_MINI_LESSON_CARDS.length}
                 </span>
-                <span className="font-mono-tag text-[12px] text-[var(--ink)]/75">
+                <span className="font-mono-tag text-[13px] text-[var(--ink)]/75">
                   {card.soundFr}
                 </span>
               </div>
@@ -852,7 +1207,7 @@ export function SheetsAndModals({ app }: { app: NouqtaAppController }) {
                 </p>
 
                 <div className="space-y-1.5 pt-1">
-                  <span className="text-[11px] font-mono-tag font-bold text-[var(--brand)] block">
+                  <span className="text-[13px] font-mono-tag font-bold text-[var(--brand)] block">
                     LECTURE DES 4 LETTRES DE LA FAMILLE 1 :
                   </span>
                   <div dir="rtl" className="grid grid-cols-4 gap-2">
@@ -873,7 +1228,7 @@ export function SheetsAndModals({ app }: { app: NouqtaAppController }) {
                         >
                           {syl.arabic}
                         </span>
-                        <span className="text-[11px] font-bold text-[var(--brand)]">
+                        <span className="text-[13px] font-bold text-[var(--brand)]">
                           {syl.soundFr}
                         </span>
                       </button>
@@ -895,13 +1250,9 @@ export function SheetsAndModals({ app }: { app: NouqtaAppController }) {
                       setHarakatCardIdx((i) => i + 1);
                     } else {
                       setShowHarakatLessonSheet(false);
-                      const learnedF1 = letters
-                        .slice(0, 4)
-                        .filter((l) => learnedLetterIds.includes(l.id));
-                      const qList = buildVariedQuizSequence(
-                        learnedF1.length > 0 ? learnedF1 : letters.slice(0, 1),
-                        5,
-                        mode === 'kids' ? 3 : 4
+                      const qList = buildDynamicVowelQuizQuestions(
+                        learnedLetterIds,
+                        6
                       );
                       setActiveExam({
                         kind: 'vowels',
@@ -935,6 +1286,16 @@ export function SheetsAndModals({ app }: { app: NouqtaAppController }) {
         title="Lis à voix haute"
       >
         <div data-testid="voice-recorder-sheet" className="space-y-4">
+          {voiceMicError && (
+            <div
+              data-testid="voice-mic-error-banner"
+              role="alert"
+              className="p-3.5 rounded-[18px] bg-[var(--bad)]/15 border-2 border-[var(--bad)] text-[var(--bad)] text-[14px] font-semibold"
+            >
+              {voiceMicError}
+            </div>
+          )}
+
           {voiceRecStep === 'explain' && (
             <div className="space-y-4">
               <div className="p-4 rounded-[20px] bg-[var(--paper)] border border-[var(--line)] space-y-2">
@@ -945,7 +1306,7 @@ export function SheetsAndModals({ app }: { app: NouqtaAppController }) {
                   Ton enregistrement (maximum 30 secondes) est envoyé uniquement
                   à ton professeur pour vérifier ta prononciation.
                 </p>
-                <p className="text-[12px] text-[var(--ink)]/70">
+                <p className="text-[13px] text-[var(--ink)]/70">
                   Conservation privée limitée à 90 jours · Suppression immédiate
                   sur simple demande.
                 </p>
@@ -963,7 +1324,7 @@ export function SheetsAndModals({ app }: { app: NouqtaAppController }) {
                     Accord d&apos;un parent (Mode Enfant)
                   </span>
                   <span
-                    className={`px-3 py-1 rounded-full font-mono-tag text-[11px] font-bold ${
+                    className={`px-3 py-1 rounded-full font-mono-tag text-[13px] font-bold ${
                       voiceParentalConsent
                         ? 'bg-[var(--good)]/20 text-[var(--good)]'
                         : 'bg-[var(--bad)]/15 text-[var(--bad)]'
@@ -978,7 +1339,10 @@ export function SheetsAndModals({ app }: { app: NouqtaAppController }) {
                 data-testid="voice-start-record-btn"
                 disabled={mode === 'kids' && !voiceParentalConsent}
                 icon={<Mic className="w-5 h-5" />}
-                onClick={startVoiceReadingRecording}
+                onClick={() => {
+                  setVoiceMicError(null);
+                  startVoiceReadingRecording();
+                }}
               >
                 Enregistrer (max 30 s)
               </PrimaryButton>
@@ -1013,7 +1377,7 @@ export function SheetsAndModals({ app }: { app: NouqtaAppController }) {
                   <span className="font-bold text-[15px] text-[var(--ink)] block">
                     Écouter mon enregistrement
                   </span>
-                  <span className="font-mono-tag text-[12px] text-[var(--brand)]">
+                  <span className="font-mono-tag text-[13px] text-[var(--brand)]">
                     Durée : {Math.max(1, voiceSecElapsed)} s / 30 s
                   </span>
                 </div>
@@ -1036,6 +1400,7 @@ export function SheetsAndModals({ app }: { app: NouqtaAppController }) {
                   icon={<RotateCcw className="w-4 h-4" />}
                   onClick={() => {
                     setVoiceDataUrl(null);
+                    setVoiceMicError(null);
                     setVoiceSecElapsed(0);
                     setVoiceRecStep('explain');
                   }}
@@ -1048,6 +1413,7 @@ export function SheetsAndModals({ app }: { app: NouqtaAppController }) {
                   aria-label="Supprimer l'enregistrement"
                   onClick={() => {
                     setVoiceDataUrl(null);
+                    setVoiceMicError(null);
                     setVoiceSecElapsed(0);
                     setShowVoiceRecorderSheet(false);
                     showToast('Enregistrement supprimé', 'info');
@@ -1061,8 +1427,15 @@ export function SheetsAndModals({ app }: { app: NouqtaAppController }) {
 
               <PrimaryButton
                 data-testid="voice-send-to-teacher-btn"
+                disabled={!voiceDataUrl || Boolean(voiceMicError)}
                 icon={<Send className="w-5 h-5" />}
                 onClick={() => {
+                  if (!voiceDataUrl || voiceMicError) {
+                    setVoiceMicError(
+                      'Aucun enregistrement vocal valide. Veuillez réessayer.'
+                    );
+                    return;
+                  }
                   const expires = new Date();
                   expires.setDate(expires.getDate() + 90);
                   setState((prev) => ({
@@ -1076,9 +1449,7 @@ export function SheetsAndModals({ app }: { app: NouqtaAppController }) {
                         wordId: activeReadingWord?.id,
                         kind: 'audio',
                         imageRef: '',
-                        audioRef:
-                          voiceDataUrl ||
-                          'data:audio/webm;base64,NOUQTA_VOICE_30S',
+                        audioRef: voiceDataUrl,
                         durationSec: Math.min(30, Math.max(2, voiceSecElapsed)),
                         parentalConsent: voiceParentalConsent,
                         expiresAtIso: expires.toISOString().slice(0, 10),
@@ -1202,7 +1573,7 @@ export function SheetsAndModals({ app }: { app: NouqtaAppController }) {
                   setActiveMiniGame(g.id);
                   setLastPlayedMiniGame(g.id);
                 }}
-                className={`min-h-[48px] h-[48px] px-3 rounded-[14px] text-[12px] font-bold whitespace-nowrap border pressable cursor-pointer flex items-center gap-1.5 ${
+                className={`min-h-[48px] h-[48px] px-3 rounded-[14px] text-[13px] font-bold whitespace-nowrap border pressable cursor-pointer flex items-center gap-1.5 ${
                   activeMiniGame === g.id
                     ? 'bg-[var(--brand-deep)] text-white border-[var(--brand-deep)]'
                     : 'bg-[var(--paper)] text-[var(--ink)] border-[var(--line)]'
@@ -1319,12 +1690,15 @@ export function SheetsAndModals({ app }: { app: NouqtaAppController }) {
             const bestPathD = pointsToSmoothQuadraticSvgPath(bestPts);
             const bestOpacity = albumSliderPct / 100;
             const firstOpacity = 1 - bestOpacity * 0.75;
+            const shortDate = formatFrenchShortDate(
+              prog?.masteredAt || prog?.firstDoneAt || getTodayIsoDate()
+            );
 
             return (
               <div data-testid="album-compare-sheet" className="space-y-4">
                 <div className="flex items-center justify-between text-[13px] font-semibold">
                   <span className="font-mono-tag text-[var(--brand)]">
-                    AVANT (1ER TRACÉ)
+                    AVANT ({shortDate})
                   </span>
                   <span className="font-mono-tag text-[var(--good)]">
                     MAINTENANT (MEILLEUR TRACÉ)
@@ -1337,27 +1711,45 @@ export function SheetsAndModals({ app }: { app: NouqtaAppController }) {
                     className="w-[200px] h-[200px]"
                     aria-label="Comparaison Avant et Maintenant du tracé"
                   >
-                    {letter.forms.isolated.strokes.map((st) =>
-                      st.kind === 'body' ? (
+                    {letter.forms.isolated.bodyPath ? (
+                      <>
                         <path
-                          key={st.id}
-                          d={st.d}
-                          fill="none"
-                          stroke="#C9D6D1"
-                          strokeWidth={14}
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
+                          d={letter.forms.isolated.bodyPath}
+                          fill="#C9D6D1"
                           opacity={0.45}
                         />
-                      ) : (
-                        <circle
-                          key={st.id}
-                          cx={st.at[0]}
-                          cy={st.at[1]}
-                          r={st.radius}
-                          fill="#07463D"
-                          opacity={0.85}
-                        />
+                        {(letter.forms.isolated.dots || []).map((dt, dIdx) => (
+                          <path
+                            key={`adot_${dIdx}`}
+                            d={dt.path}
+                            fill="#07463D"
+                            opacity={0.85}
+                          />
+                        ))}
+                      </>
+                    ) : (
+                      letter.forms.isolated.strokes.map((st) =>
+                        st.kind === 'body' ? (
+                          <path
+                            key={st.id}
+                            d={st.d}
+                            fill="none"
+                            stroke="#C9D6D1"
+                            strokeWidth={14}
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            opacity={0.45}
+                          />
+                        ) : (
+                          <circle
+                            key={st.id}
+                            cx={st.at[0]}
+                            cy={st.at[1]}
+                            r={st.radius}
+                            fill="#07463D"
+                            opacity={0.85}
+                          />
+                        )
                       )
                     )}
 
@@ -1466,7 +1858,7 @@ export function SheetsAndModals({ app }: { app: NouqtaAppController }) {
               Afficher mon prénom
             </span>
             <span
-              className={`px-3 py-1 rounded-full font-mono-tag text-[12px] font-bold ${
+              className={`px-3 py-1 rounded-full font-mono-tag text-[13px] font-bold ${
                 shareIncludeFirstName
                   ? 'bg-[var(--good)]/20 text-[var(--good)]'
                   : 'bg-[var(--line)] text-[var(--ink)]/70'
@@ -1705,126 +2097,159 @@ export function SheetsAndModals({ app }: { app: NouqtaAppController }) {
           ) : (
             <>
               <div className="my-auto space-y-5">
-                <div className="text-center space-y-2">
-                  <h2 className="font-display text-[24px]">
-                    {activeExam.questions[activeExam.currentIndex].promptFr}
-                  </h2>
-                  {activeExam.questions[activeExam.currentIndex]
-                    .promptArabic && (
-                    <div
-                      lang="ar"
-                      dir="rtl"
-                      style={{ lineHeight: 1.95 }}
-                      className="font-arabic text-[56px] text-[var(--brand-deep)] dark:text-[var(--ink)]"
-                    >
-                      {
-                        activeExam.questions[activeExam.currentIndex]
-                          .promptArabic
-                      }
-                    </div>
-                  )}
-                  {activeExam.questions[activeExam.currentIndex]
-                    .promptPicture && (
-                    <div className="text-[48px] leading-none">
-                      {
-                        activeExam.questions[activeExam.currentIndex]
-                          .promptPicture
-                      }
-                    </div>
-                  )}
-                  {activeExam.questions[activeExam.currentIndex].audioText && (
-                    <div className="flex justify-center">
-                      <IconButton
-                        ariaLabel="Écouter"
-                        onClick={() =>
-                          speechService.speakArabic(
-                            activeExam.questions[activeExam.currentIndex]
-                              .audioText!
-                          )
-                        }
-                      >
-                        <Volume2 className="w-5 h-5 text-[var(--brand)]" />
-                      </IconButton>
-                    </div>
-                  )}
-                </div>
-
-                <div className="space-y-2.5">
-                  {activeExam.questions[activeExam.currentIndex].options.map(
-                    (opt, idx) => (
-                      <div
-                        key={opt.id}
-                        className={`min-h-[64px] w-full rounded-[18px] border-2 px-3 flex items-center justify-between gap-2 ${
-                          activeExam.selectedOpt === idx
-                            ? 'border-[var(--brand)] bg-[var(--brand)]/10'
-                            : 'border-[var(--line)] bg-[var(--surface)]'
-                        }`}
-                      >
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setActiveExam({ ...activeExam, selectedOpt: idx });
-                            if (opt.audioText) {
-                              speechService.speakArabic(opt.audioText);
-                            }
-                          }}
-                          className="flex-1 min-h-[56px] flex items-center justify-between gap-3 text-left pressable cursor-pointer"
+                {(() => {
+                  const curQ = activeExam.questions[activeExam.currentIndex];
+                  const isVowelHearChoose = curQ.kind === 'hear_and_choose';
+                  const isVowelReadChoose = curQ.kind === 'read_and_choose';
+                  return (
+                    <>
+                      <div className="text-center space-y-2">
+                        <h2
+                          data-testid="exam-question-prompt"
+                          className="font-display text-[24px]"
                         >
-                          {opt.picture && opt.arabicWord && opt.subLabelFr ? (
-                            <div className="flex items-center gap-3 px-1">
-                              <span
-                                className="text-[28px] leading-none shrink-0"
-                                aria-hidden="true"
-                              >
-                                {opt.picture}
-                              </span>
-                              <div className="flex flex-col items-start">
+                          {curQ.promptFr}
+                        </h2>
+                        {curQ.promptArabic && !isVowelHearChoose && (
+                          <div
+                            data-testid="exam-prompt-arabic"
+                            lang="ar"
+                            dir="rtl"
+                            style={{ lineHeight: 1.95 }}
+                            className="font-arabic text-[56px] text-[var(--brand-deep)] dark:text-[var(--ink)]"
+                          >
+                            {curQ.promptArabic}
+                          </div>
+                        )}
+                        {curQ.promptPicture && (
+                          <div className="text-[48px] leading-none">
+                            {curQ.promptPicture}
+                          </div>
+                        )}
+                        {curQ.audioText && (
+                          <div className="flex justify-center pt-1">
+                            <button
+                              type="button"
+                              data-testid="exam-prompt-audio-btn"
+                              aria-label="Écouter"
+                              onClick={() =>
+                                speechService.speakArabic(curQ.audioText!)
+                              }
+                              className="w-[56px] h-[56px] min-w-[56px] min-h-[56px] rounded-full bg-[var(--brand-deep)] text-white flex items-center justify-center shadow-sm pressable cursor-pointer"
+                            >
+                              <Volume2 className="w-6 h-6" />
+                            </button>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="space-y-2.5">
+                        {curQ.options.map((opt, idx) => (
+                          <div
+                            key={opt.id}
+                            data-testid={`exam-option-${idx}`}
+                            className={`min-h-[64px] w-full rounded-[18px] border-2 px-3 flex items-center justify-between gap-2 ${
+                              activeExam.selectedOpt === idx
+                                ? 'border-[var(--brand)] bg-[var(--brand)]/10'
+                                : 'border-[var(--line)] bg-[var(--surface)]'
+                            }`}
+                          >
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setActiveExam({
+                                  ...activeExam,
+                                  selectedOpt: idx,
+                                });
+                                if (opt.audioText) {
+                                  speechService.speakArabic(opt.audioText);
+                                }
+                              }}
+                              className="flex-1 min-h-[56px] flex items-center justify-between gap-3 text-left pressable cursor-pointer"
+                            >
+                              {isVowelHearChoose ? (
+                                /* PHASE 3.1: hear_and_choose -> options are 3 syllable glyphs only, no transliteration */
                                 <span
                                   lang="ar"
                                   dir="rtl"
-                                  style={{ lineHeight: 1.6 }}
-                                  className="font-arabic text-[26px] text-[var(--ink)]"
+                                  style={{ lineHeight: 1.85 }}
+                                  className="font-arabic text-[40px] leading-none mx-auto text-[var(--ink)]"
                                 >
-                                  {opt.arabicWord}
+                                  {opt.label}
                                 </span>
-                                <span className="text-[12px] font-medium text-[var(--ink)]/75">
-                                  {opt.subLabelFr}
+                              ) : isVowelReadChoose ? (
+                                /* PHASE 3.1: read_and_choose -> options are 3 transliterations as text, no Arabic glyphs in options */
+                                <span
+                                  lang="fr"
+                                  dir="ltr"
+                                  className="font-bold text-[19px] mx-auto text-[var(--ink)]"
+                                >
+                                  {opt.label}
                                 </span>
-                              </div>
-                            </div>
-                          ) : (
-                            <span
-                              lang={opt.isArabic ? 'ar' : 'fr'}
-                              dir={opt.isArabic ? 'rtl' : 'ltr'}
-                              className={
-                                opt.isArabic
-                                  ? 'font-arabic text-[38px] leading-none mx-auto'
-                                  : 'font-semibold text-[17px] px-2'
-                              }
-                            >
-                              {opt.label}
-                            </span>
-                          )}
-                        </button>
+                              ) : opt.picture &&
+                                opt.arabicWord &&
+                                opt.subLabelFr ? (
+                                <div className="flex items-center gap-3 px-1">
+                                  <span
+                                    className="text-[28px] leading-none shrink-0"
+                                    aria-hidden="true"
+                                  >
+                                    {opt.picture}
+                                  </span>
+                                  <div className="flex flex-col items-start">
+                                    <span
+                                      lang="ar"
+                                      dir="rtl"
+                                      style={{ lineHeight: 1.6 }}
+                                      className="font-arabic text-[26px] text-[var(--ink)]"
+                                    >
+                                      {opt.arabicWord}
+                                    </span>
+                                    <span className="text-[13px] font-medium text-[var(--ink)]/75">
+                                      {opt.subLabelFr}
+                                    </span>
+                                  </div>
+                                </div>
+                              ) : (
+                                <span
+                                  lang={opt.isArabic ? 'ar' : 'fr'}
+                                  dir={opt.isArabic ? 'rtl' : 'ltr'}
+                                  className={
+                                    opt.isArabic
+                                      ? 'font-arabic text-[38px] leading-none mx-auto'
+                                      : 'font-semibold text-[17px] px-2'
+                                  }
+                                >
+                                  {opt.label}
+                                </span>
+                              )}
+                            </button>
 
-                        {opt.audioText && (
-                          <button
-                            type="button"
-                            aria-label={`Écouter ${opt.subLabelFr || opt.label}`}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              speechService.speakArabic(opt.audioText!);
-                              setActiveExam({ ...activeExam, selectedOpt: idx });
-                            }}
-                            className="w-[48px] h-[48px] min-w-[48px] min-h-[48px] rounded-full bg-[var(--paper)] border border-[var(--line)] flex items-center justify-center text-[var(--brand)] shrink-0 pressable cursor-pointer"
-                          >
-                            <Volume2 className="w-4 h-4" />
-                          </button>
-                        )}
+                            {opt.audioText && !isVowelReadChoose && (
+                              <button
+                                type="button"
+                                aria-label={`Écouter ${
+                                  opt.subLabelFr || opt.label
+                                }`}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  speechService.speakArabic(opt.audioText!);
+                                  setActiveExam({
+                                    ...activeExam,
+                                    selectedOpt: idx,
+                                  });
+                                }}
+                                className="w-[48px] h-[48px] min-w-[48px] min-h-[48px] rounded-full bg-[var(--paper)] border border-[var(--line)] flex items-center justify-center text-[var(--brand)] shrink-0 pressable cursor-pointer"
+                              >
+                                <Volume2 className="w-4 h-4" />
+                              </button>
+                            )}
+                          </div>
+                        ))}
                       </div>
-                    )
-                  )}
-                </div>
+                    </>
+                  );
+                })()}
               </div>
 
               <PrimaryButton
@@ -1921,6 +2346,7 @@ export function SheetsAndModals({ app }: { app: NouqtaAppController }) {
               existingSubmission={sub}
               practiceHistory={practiceAttempts}
               onClose={() => setActiveLesson(null)}
+              onRateLetter={(lid, rating) => rateLetter(lid, rating)}
               onStepComplete={(step, stars) => {
                 if (step === 'retenir') {
                   setAntWalkingFamilyId(letterObj.family);

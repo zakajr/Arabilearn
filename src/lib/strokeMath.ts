@@ -13,24 +13,21 @@ export type DotArrangement = 'none' | 'single' | 'row' | 'triangle_up';
 export const DEFAULT_GLYPH_STROKE_WIDTH = 14;
 
 /**
- * Phase C: A dot is a small diamond (square rotated 45 degrees), size about 0.9 x stroke width.
+ * Phase 2.1: Dot diagonal at least 22 units in the 200x200 lesson canvas (22.10 units).
  */
-export function getDotSize(strokeWidth = DEFAULT_GLYPH_STROKE_WIDTH): number {
-  return Number((0.9 * strokeWidth).toFixed(2));
+export function getDotSize(_strokeWidth = DEFAULT_GLYPH_STROKE_WIDTH): number {
+  return 22.1;
 }
 
 /**
- * Half-diagonal of the diamond dot.
- * For a diamond whose visual span across the stroke is 0.9 * strokeWidth (13.5 units for width 15),
- * the half-diagonal from center to vertex is (0.9 * strokeWidth) / 2 = 6.75 units,
- * and the unrotated SVG rect side is (0.9 * strokeWidth) / Math.SQRT2 ≈ 9.55 units.
+ * Half-diagonal of the diamond dot (>= 11.0 units so full diagonal >= 22.0 units).
  */
-export function getDotHalfDiagonal(strokeWidth = DEFAULT_GLYPH_STROKE_WIDTH): number {
-  return Number(((0.9 * strokeWidth) / 2).toFixed(2));
+export function getDotHalfDiagonal(_strokeWidth = DEFAULT_GLYPH_STROKE_WIDTH): number {
+  return 11.05;
 }
 
-export function getDotRectSide(strokeWidth = DEFAULT_GLYPH_STROKE_WIDTH): number {
-  return Number(((0.9 * strokeWidth) / Math.SQRT2).toFixed(2));
+export function getDotRectSide(_strokeWidth = DEFAULT_GLYPH_STROKE_WIDTH): number {
+  return Number((22.1 / Math.SQRT2).toFixed(2));
 }
 
 export interface GlyphBodyStroke {
@@ -66,7 +63,8 @@ export interface GlyphForm {
     arrangement?: DotArrangement;
     size?: number;
   };
-  status?: 'draft' | 'validated' | 'brouillon' | 'valide';
+  status?: 'draft' | 'validated' | 'brouillon' | 'valide' | 'aligne';
+  renderMode?: 'font' | 'monoline';
 }
 
 export type TraceFailReason =
@@ -1365,17 +1363,22 @@ export function computeDotCoordinatesForBodyConfig(
 
   let baseY =
     dotsPosition === 'below'
-      ? Math.min(176, Math.round(maxY + requiredClearance + 2))
-      : Math.max(24, Math.round(minY - requiredClearance - 2));
+      ? Math.min(175, Math.round(maxY + requiredClearance + 2))
+      : Math.max(25, Math.round(minY - requiredClearance - 2));
+
+  const clampedCx = Math.max(48, Math.min(152, cx));
 
   const buildCand = (yVal: number): [number, number][] => {
-    if (dotsCount === 1) return [[cx, yVal]];
-    if (dotsCount === 2) return [[cx - 11, yVal], [cx + 11, yVal]];
-    const apexY = dotsPosition === 'below' ? Math.min(182, yVal + 14) : Math.max(18, yVal - 14);
+    if (dotsCount === 1) return [[clampedCx, yVal]];
+    if (dotsCount === 2) return [[clampedCx - 23, yVal], [clampedCx + 23, yVal]];
+    const apexY =
+      dotsPosition === 'below'
+        ? Math.min(175, yVal + 39)
+        : Math.max(24, yVal - 39);
     return [
-      [cx - 12, yVal],
-      [cx + 12, yVal],
-      [cx, apexY]
+      [clampedCx - 23, yVal],
+      [clampedCx + 23, yVal],
+      [clampedCx, apexY]
     ];
   };
 
@@ -1386,7 +1389,7 @@ export function computeDotCoordinatesForBodyConfig(
       samples.every((sp) => Math.hypot(px - sp.x, py - sp.y) >= requiredClearance - 0.5)
     );
     if (allClear) return pts;
-    baseY = dotsPosition === 'below' ? Math.min(182, baseY + 2) : Math.max(18, baseY - 2);
+    baseY = dotsPosition === 'below' ? Math.min(175, baseY + 2) : Math.max(25, baseY - 2);
   }
 
   return buildCand(baseY);

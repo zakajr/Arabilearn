@@ -39,6 +39,11 @@ import {
   saveGlyphEditorOverride,
   clearGlyphEditorOverride,
 } from '../services/dataService';
+import {
+  getGlyphOutline,
+  computeGlyphAlignmentAudit,
+  suggestCenterlineFromOutline,
+} from '../lib/fontGlyphs';
 import { CalligraphyAntSvgGroup } from './BlueprintComponents';
 
 interface GlyphStrokeEditorPageProps {
@@ -90,6 +95,7 @@ export const GlyphStrokeEditorPage: React.FC<GlyphStrokeEditorPageProps> = ({
   const [redoStack, setRedoStack] = useState<GlyphForm[]>([]);
   const [activeStrokeIdx, setActiveStrokeIdx] = useState<number>(0);
   const [showReferenceOverlay, setShowReferenceOverlay] = useState<boolean>(true);
+  const [referenceOpacity, setReferenceOpacity] = useState<0.35 | 1>(0.35);
   const [dragTarget, setDragTarget] = useState<DragTarget>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [importModalOpen, setImportModalOpen] = useState<boolean>(false);
@@ -188,10 +194,17 @@ export const GlyphStrokeEditorPage: React.FC<GlyphStrokeEditorPageProps> = ({
     setWorkingGlyph(cloneGlyph(next));
   };
 
-  const handleSaveCurrent = (forcedStatus?: 'brouillon' | 'valide') => {
+  const handleSaveCurrent = (
+    forcedStatus?: 'brouillon' | 'valide' | 'aligne'
+  ) => {
+    const alignAudit = computeGlyphAlignmentAudit(workingGlyph, selectedLetter.id);
+    const nextStatus =
+      forcedStatus ??
+      (alignAudit.passed ? 'aligne' : workingGlyph.status ?? 'valide');
     const toSave: GlyphForm = {
       ...cloneGlyph(workingGlyph),
-      status: forcedStatus ?? workingGlyph.status ?? 'valide',
+      status: nextStatus,
+      renderMode: alignAudit.passed ? 'font' : 'monoline',
     };
     setWorkingGlyph(toSave);
     saveGlyphEditorOverride(selectedLetter.id, toSave);
@@ -199,11 +212,41 @@ export const GlyphStrokeEditorPage: React.FC<GlyphStrokeEditorPageProps> = ({
     setOverrides(updatedOverrides);
     onGlyphSaved?.();
     const isValide =
-      toSave.status === 'valide' || toSave.status === 'validated';
+      toSave.status === 'valide' ||
+      toSave.status === 'validated' ||
+      toSave.status === 'aligne';
     showToast(
       `Lettre ${selectedLetter.shortName} sauvegardée (${
-        isValide ? 'Validé' : 'Brouillon'
+        toSave.status === 'aligne'
+          ? 'Aligné'
+          : isValide
+          ? 'Validé'
+          : 'Brouillon'
       }).`
+    );
+  };
+
+  // Phase 1.6: "Suggérer la ligne centrale" computes a centre line from the outline (rasterise, thin to skeleton,
+  // trace from right-most / top-most endpoint, simplify, fit curves) and loads it for editing. Never auto-validate.
+  const handleSuggestCenterline = () => {
+    stopAnimationPreview();
+    const suggestedStrokes = suggestCenterlineFromOutline(
+      selectedLetter.id,
+      'isolated'
+    );
+    pushChange((draft) => {
+      const dots = draft.strokes.filter(
+        (s): s is GlyphDotStroke => s.kind === 'dot'
+      );
+      rebuildStrokes(draft, suggestedStrokes, dots);
+      // Never auto-validate when suggesting centre line
+      draft.status = 'brouillon';
+      draft.renderMode = 'monoline';
+      return draft;
+    });
+    setActiveStrokeIdx(0);
+    showToast(
+      `Ligne centrale suggérée pour ${selectedLetter.shortName} (statut : Brouillon).`
     );
   };
 
@@ -556,6 +599,14 @@ export const GlyphStrokeEditorPage: React.FC<GlyphStrokeEditorPageProps> = ({
     };
   }, []);
 
+  const fontOutline = useMemo(
+    () => getGlyphOutline(selectedLetter.id, 'isolated'),
+    [selectedLetter.id]
+  );
+  const alignmentAudit = useMemo(
+    () => computeGlyphAlignmentAudit(workingGlyph, selectedLetter.id),
+    [workingGlyph, selectedLetter.id]
+  );
   const clearanceAudit = useMemo(
     () => computeGlyphDotClearanceAudit(workingGlyph),
     [workingGlyph]
@@ -628,7 +679,9 @@ export const GlyphStrokeEditorPage: React.FC<GlyphStrokeEditorPageProps> = ({
   const strokeW = bodyStrokes[0]?.width ?? DEFAULT_GLYPH_STROKE_WIDTH;
   const dotSide = getDotRectSide(strokeW);
   const isValideStatus =
-    workingGlyph.status === 'valide' || workingGlyph.status === 'validated';
+    workingGlyph.status === 'valide' ||
+    workingGlyph.status === 'validated' ||
+    workingGlyph.status === 'aligne';
 
   return (
     <div
@@ -648,7 +701,7 @@ export const GlyphStrokeEditorPage: React.FC<GlyphStrokeEditorPageProps> = ({
         </button>
 
         <div className="text-center min-w-0">
-          <p className="text-xs font-mono uppercase tracking-wider text-[#52605A]">
+          <p className="text-[13px] font-mono uppercase tracking-wider text-[#52605A]">
             Éditeur de glyphes · /dev/glyphs
           </p>
           <h1 className="text-sm font-bold truncate">
@@ -660,8 +713,10 @@ export const GlyphStrokeEditorPage: React.FC<GlyphStrokeEditorPageProps> = ({
         <button
           type="button"
           data-testid="editor-save-valide-btn"
-          onClick={() => handleSaveCurrent('valide')}
-          className="min-h-[48px] px-3.5 rounded-xl bg-[#0D5C46] text-white text-xs font-bold flex items-center gap-1.5 active:scale-95 transition-transform"
+          onClick={() =>
+            handleSaveCurrent(alignmentAudit.passed ? 'aligne' : 'valide')
+          }
+          className="min-h-[48px] px-3.5 rounded-xl bg-[#0D5C46] text-white text-[13px] font-bold flex items-center gap-1.5 active:scale-95 transition-transform"
         >
           <CheckCircle2 className="w-4 h-4" />
           <span>Valider</span>
@@ -671,27 +726,29 @@ export const GlyphStrokeEditorPage: React.FC<GlyphStrokeEditorPageProps> = ({
       {toastMessage && (
         <div
           role="status"
-          className="fixed bottom-4 left-4 right-4 z-50 max-w-md mx-auto px-4 py-3 rounded-xl bg-[#111C18] text-white text-xs font-semibold shadow-lg flex items-center justify-between"
+          className="fixed bottom-4 left-4 right-4 z-50 max-w-md mx-auto px-4 py-3 rounded-xl bg-[#111C18] text-white text-[13px] font-semibold shadow-lg flex items-center justify-between"
         >
           <span>{toastMessage}</span>
         </div>
       )}
 
       <div className="max-w-3xl mx-auto p-3 space-y-4">
-        {/* 28 Letters Horizontal Strip with Brouillon / Validé Status */}
+        {/* 28 Letters Horizontal Strip with Brouillon / Validé / Aligné Status */}
         <section aria-label="Liste des 28 lettres">
           <div className="flex items-center justify-between mb-1.5">
-            <span className="text-xs font-bold text-[#52605A]">
-              28 lettres (statut Brouillon / Validé)
+            <span className="text-[13px] font-bold text-[#52605A]">
+              28 lettres (statut Brouillon / Aligné)
             </span>
-            <span className="text-[11px] font-mono text-[#52605A]">
+            <span className="text-[13px] font-mono text-[#52605A]">
               {
                 LETTERS_DATA.filter((l) => {
                   const st =
                     overrides[l.id]?.status ??
                     l.forms.isolated.status ??
                     'brouillon';
-                  return st === 'valide' || st === 'validated';
+                  return (
+                    st === 'valide' || st === 'validated' || st === 'aligne'
+                  );
                 }).length
               }
               /28 validées
@@ -704,7 +761,9 @@ export const GlyphStrokeEditorPage: React.FC<GlyphStrokeEditorPageProps> = ({
                 letter.forms.isolated.status ??
                 'brouillon';
               const isLetterValide =
-                effStatus === 'valide' || effStatus === 'validated';
+                effStatus === 'valide' ||
+                effStatus === 'validated' ||
+                effStatus === 'aligne';
               const isSelected = letter.id === selectedLetter.id;
               return (
                 <button
@@ -712,14 +771,14 @@ export const GlyphStrokeEditorPage: React.FC<GlyphStrokeEditorPageProps> = ({
                   type="button"
                   data-testid={`editor-letter-btn-${letter.id}`}
                   onClick={() => selectLetter(letter.id)}
-                  className={`min-w-[68px] min-h-[54px] px-2.5 py-1.5 rounded-xl border text-left shrink-0 flex flex-col justify-between transition-transform active:scale-95 ${
+                  className={`min-w-[74px] min-h-[56px] px-2.5 py-1.5 rounded-xl border text-left shrink-0 flex flex-col justify-between transition-transform active:scale-95 ${
                     isSelected
                       ? 'bg-[#0D5C46] text-white border-[#0D5C46]'
                       : 'bg-white dark:bg-[#15211C] border-[#E3DDD2] dark:border-[#21322B]'
                   }`}
                 >
                   <div className="flex items-center justify-between gap-1">
-                    <span className="text-xs font-bold truncate">
+                    <span className="text-[13px] font-bold truncate">
                       {letter.shortName}
                     </span>
                     <span className="font-arabic text-base leading-none">
@@ -727,7 +786,7 @@ export const GlyphStrokeEditorPage: React.FC<GlyphStrokeEditorPageProps> = ({
                     </span>
                   </div>
                   <span
-                    className={`text-[10px] font-mono px-1.5 py-0.5 rounded w-fit ${
+                    className={`text-[13px] font-mono px-1.5 py-0.5 rounded w-fit ${
                       isLetterValide
                         ? isSelected
                           ? 'bg-white/20 text-white'
@@ -737,7 +796,11 @@ export const GlyphStrokeEditorPage: React.FC<GlyphStrokeEditorPageProps> = ({
                         : 'bg-[#FDF1DC] text-[#9A5B06]'
                     }`}
                   >
-                    {isLetterValide ? 'Validé' : 'Brouillon'}
+                    {effStatus === 'aligne'
+                      ? 'Aligné'
+                      : isLetterValide
+                      ? 'Validé'
+                      : 'Brouillon'}
                   </span>
                 </button>
               );
@@ -748,7 +811,7 @@ export const GlyphStrokeEditorPage: React.FC<GlyphStrokeEditorPageProps> = ({
         {/* Interactive 200x200 Authoring Canvas */}
         <section className="bg-white dark:bg-[#15211C] rounded-2xl border border-[#E3DDD2] dark:border-[#21322B] p-3 space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex items-center gap-1.5">
+            <div className="flex flex-wrap items-center gap-1.5">
               <button
                 type="button"
                 onClick={handleUndo}
@@ -769,16 +832,40 @@ export const GlyphStrokeEditorPage: React.FC<GlyphStrokeEditorPageProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() => setShowReferenceOverlay((v) => !v)}
-                aria-label="Afficher ou masquer le calque de référence Amiri"
-                className={`min-h-[48px] px-3 rounded-xl border text-xs font-semibold flex items-center gap-1.5 active:scale-95 ${
+                data-testid="editor-toggle-reference-btn"
+                onClick={() => {
+                  if (!showReferenceOverlay) {
+                    setShowReferenceOverlay(true);
+                    setReferenceOpacity(0.35);
+                  } else if (referenceOpacity === 0.35) {
+                    setReferenceOpacity(1);
+                  } else {
+                    setShowReferenceOverlay(false);
+                  }
+                }}
+                aria-label="Basculer le calque de contour Amiri (35% / 100%)"
+                className={`min-h-[48px] px-3 rounded-xl border text-[13px] font-semibold flex items-center gap-1.5 active:scale-95 ${
                   showReferenceOverlay
                     ? 'bg-[#E3F3EC] border-[#0D5C46] text-[#0D5C46]'
                     : 'border-[#E3DDD2] dark:border-[#21322B] text-[#52605A]'
                 }`}
               >
                 <Eye className="w-4 h-4" />
-                <span>Calque Amiri (25%)</span>
+                <span>
+                  Contour Naskh (
+                  {showReferenceOverlay
+                    ? `${Math.round(referenceOpacity * 100)}%`
+                    : 'Masqué'}
+                  )
+                </span>
+              </button>
+              <button
+                type="button"
+                data-testid="suggest-centerline-btn"
+                onClick={handleSuggestCenterline}
+                className="min-h-[48px] px-3 rounded-xl border border-[#0D5C46] bg-[#FAF6EE] dark:bg-[#0C1411] text-[#0D5C46] dark:text-[#4CC9A0] text-[13px] font-bold flex items-center gap-1.5 active:scale-95"
+              >
+                <span>Suggérer la ligne centrale</span>
               </button>
             </div>
 
@@ -787,7 +874,7 @@ export const GlyphStrokeEditorPage: React.FC<GlyphStrokeEditorPageProps> = ({
                 type="button"
                 data-testid="editor-play-animation-btn"
                 onClick={playAnimationPreview}
-                className="min-h-[48px] px-3.5 rounded-xl bg-[#D97706] text-white text-xs font-bold flex items-center gap-1.5 active:scale-95"
+                className="min-h-[48px] px-3.5 rounded-xl bg-[#D97706] text-white text-[13px] font-bold flex items-center gap-1.5 active:scale-95"
               >
                 <Play className="w-4 h-4 fill-current" />
                 <span>Jouer l&apos;animation</span>
@@ -796,7 +883,7 @@ export const GlyphStrokeEditorPage: React.FC<GlyphStrokeEditorPageProps> = ({
                 type="button"
                 onClick={handleResetLetter}
                 aria-label="Réinitialiser la lettre"
-                className="min-w-[48px] min-h-[48px] px-2.5 rounded-xl border border-[#E3DDD2] dark:border-[#21322B] text-xs font-semibold flex items-center justify-center active:scale-95"
+                className="min-w-[48px] min-h-[48px] px-2.5 rounded-xl border border-[#E3DDD2] dark:border-[#21322B] text-[13px] font-semibold flex items-center justify-center active:scale-95"
               >
                 <RotateCcw className="w-4 h-4" />
               </button>
@@ -825,9 +912,9 @@ export const GlyphStrokeEditorPage: React.FC<GlyphStrokeEditorPageProps> = ({
               />
               <line
                 x1={12}
-                y1={120}
+                y1={fontOutline.baseline || 120}
                 x2={188}
-                y2={120}
+                y2={fontOutline.baseline || 120}
                 stroke="#D5CFC2"
                 strokeWidth={1}
               />
@@ -841,19 +928,18 @@ export const GlyphStrokeEditorPage: React.FC<GlyphStrokeEditorPageProps> = ({
                 strokeDasharray="2 4"
               />
 
-              {/* Authoring-only Amiri 25% reference overlay */}
-              {showReferenceOverlay && (
-                <text
-                  x={100}
-                  y={132}
-                  textAnchor="middle"
-                  className="font-arabic pointer-events-none select-none"
-                  fontSize={126}
-                  fill="#0D5C46"
-                  opacity={0.25}
+              {/* Phase 1.6: Font body outline reference overlay (toggle 35% / 100%) */}
+              {showReferenceOverlay && fontOutline.bodyPath && (
+                <g
+                  data-testid="editor-font-outline-overlay"
+                  opacity={referenceOpacity}
+                  className="pointer-events-none select-none"
                 >
-                  {selectedLetter.arabicChar}
-                </text>
+                  <path d={fontOutline.bodyPath} fill="#0D5C46" />
+                  {fontOutline.dots.map((d, idx) => (
+                    <path key={idx} d={d.path} fill="#D97706" />
+                  ))}
+                </g>
               )}
 
               {/* Light grey base paths */}
@@ -1275,25 +1361,25 @@ export const GlyphStrokeEditorPage: React.FC<GlyphStrokeEditorPageProps> = ({
           </section>
         </div>
 
-        {/* Live Validation Panel (Red / Green) */}
+        {/* Live Validation Panel (Red / Green + Phase 1.5 Alignment Audit) */}
         <section
           data-testid="editor-validation-panel"
           className="bg-white dark:bg-[#15211C] rounded-2xl border border-[#E3DDD2] dark:border-[#21322B] p-3.5 space-y-2.5"
         >
           <div className="flex items-center justify-between">
-            <h2 className="text-xs font-bold uppercase tracking-wider text-[#52605A]">
-              Panneau de validation automatique
+            <h2 className="text-[13px] font-bold uppercase tracking-wider text-[#52605A]">
+              Panneau de validation automatique (Alignement Naskh & Dégagement)
             </h2>
             <span
-              className={`px-2.5 py-1 rounded-full text-xs font-bold flex items-center gap-1 ${
-                clearanceAudit.passed
+              className={`px-2.5 py-1 rounded-full text-[13px] font-bold flex items-center gap-1 ${
+                clearanceAudit.passed && alignmentAudit.passed
                   ? 'bg-[#E3F3EC] text-[#0D5C46]'
                   : 'bg-[#FDE8E8] text-[#B91C1C]'
               }`}
             >
-              {clearanceAudit.passed ? (
+              {clearanceAudit.passed && alignmentAudit.passed ? (
                 <>
-                  <CheckCircle2 className="w-3.5 h-3.5" /> Conforme
+                  <CheckCircle2 className="w-3.5 h-3.5" /> Aligné & Conforme
                 </>
               ) : (
                 <>
@@ -1303,7 +1389,22 @@ export const GlyphStrokeEditorPage: React.FC<GlyphStrokeEditorPageProps> = ({
             </span>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
+          <div className="grid grid-cols-1 sm:grid-cols-4 gap-2 text-[13px]">
+            <div
+              data-testid="editor-alignment-metrics"
+              className={`p-2.5 rounded-xl border ${
+                alignmentAudit.passed
+                  ? 'border-[#0D5C46]/30 bg-[#E3F3EC]/40 text-[#0D5C46]'
+                  : 'border-[#B91C1C]/30 bg-[#FDE8E8]/50 text-[#B91C1C]'
+              }`}
+            >
+              <p className="font-bold">Alignement Naskh (≥95% / ≥97%)</p>
+              <p className="font-mono mt-0.5">
+                (a) Dans corps : {alignmentAudit.centerlineInsideBodyPercent}% ·
+                (b) Couvert : {alignmentAudit.bodyCoveredByDilatedCenterlinePercent}%
+              </p>
+            </div>
+
             <div
               className={`p-2.5 rounded-xl border ${
                 clearanceAudit.strokesInsideViewBox &&
@@ -1361,7 +1462,7 @@ export const GlyphStrokeEditorPage: React.FC<GlyphStrokeEditorPageProps> = ({
             <button
               type="button"
               onClick={() => handleCopyJson('one')}
-              className="min-h-[48px] px-3.5 rounded-xl border border-[#E3DDD2] dark:border-[#21322B] bg-white dark:bg-[#15211C] text-xs font-bold flex items-center gap-1.5 active:scale-95"
+              className="min-h-[48px] px-3.5 rounded-xl border border-[#E3DDD2] dark:border-[#21322B] bg-white dark:bg-[#15211C] text-[13px] font-bold flex items-center gap-1.5 active:scale-95"
             >
               <Copy className="w-4 h-4" />
               <span>Copier le JSON (lettre)</span>
@@ -1369,7 +1470,7 @@ export const GlyphStrokeEditorPage: React.FC<GlyphStrokeEditorPageProps> = ({
             <button
               type="button"
               onClick={() => handleCopyJson('all')}
-              className="min-h-[48px] px-3.5 rounded-xl border border-[#E3DDD2] dark:border-[#21322B] bg-white dark:bg-[#15211C] text-xs font-bold flex items-center gap-1.5 active:scale-95"
+              className="min-h-[48px] px-3.5 rounded-xl border border-[#E3DDD2] dark:border-[#21322B] bg-white dark:bg-[#15211C] text-[13px] font-bold flex items-center gap-1.5 active:scale-95"
             >
               <Copy className="w-4 h-4" />
               <span>Copier le JSON (28 lettres)</span>
@@ -1380,7 +1481,7 @@ export const GlyphStrokeEditorPage: React.FC<GlyphStrokeEditorPageProps> = ({
                 setImportJsonText(JSON.stringify(workingGlyph, null, 2));
                 setImportModalOpen(true);
               }}
-              className="min-h-[48px] px-3.5 rounded-xl border border-[#E3DDD2] dark:border-[#21322B] bg-white dark:bg-[#15211C] text-xs font-bold flex items-center gap-1.5 active:scale-95"
+              className="min-h-[48px] px-3.5 rounded-xl border border-[#E3DDD2] dark:border-[#21322B] bg-white dark:bg-[#15211C] text-[13px] font-bold flex items-center gap-1.5 active:scale-95"
             >
               <Upload className="w-4 h-4" />
               <span>Importer un JSON</span>

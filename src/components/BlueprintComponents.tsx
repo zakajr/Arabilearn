@@ -220,7 +220,7 @@ export function TopHeader({
         {isOffline && (
           <span
             data-testid="offline-badge"
-            className="font-mono-tag text-[10px] px-2 py-1 rounded-full bg-[var(--accent)]/20 text-[var(--accent-ink)] dark:text-[var(--accent)] border border-[var(--accent)]/40 shrink-0"
+            className="font-mono-tag text-[13px] px-2 py-1 rounded-full bg-[var(--accent)]/20 text-[var(--accent-ink)] dark:text-[var(--accent)] border border-[var(--accent)]/40 shrink-0"
           >
             Hors ligne
           </span>
@@ -235,7 +235,7 @@ export function TopHeader({
           className="min-w-[48px] min-h-[48px] h-[48px] px-2 rounded-full bg-[var(--surface)] border border-[var(--line)] flex items-center justify-center gap-1 pressable cursor-pointer shrink-0"
         >
           <Flame className="w-4 h-4 text-[var(--accent)] fill-[var(--accent)] shrink-0" />
-          <span className="font-mono-tag text-[12px] font-bold text-[var(--ink)] whitespace-nowrap">
+          <span className="font-mono-tag text-[13px] font-bold text-[var(--ink)] whitespace-nowrap">
             {streakCount}
           </span>
         </button>
@@ -247,7 +247,7 @@ export function TopHeader({
           className="min-w-[48px] min-h-[48px] h-[48px] px-2 rounded-full bg-[var(--surface)] border border-[var(--line)] flex items-center justify-center gap-1 pressable cursor-pointer shrink-0"
         >
           <Star className="w-4 h-4 text-[var(--accent)] fill-[var(--accent)] shrink-0" />
-          <span className="font-mono-tag text-[12px] font-bold text-[var(--ink)] whitespace-nowrap">
+          <span className="font-mono-tag text-[13px] font-bold text-[var(--ink)] whitespace-nowrap">
             {starsCount}
           </span>
         </button>
@@ -333,7 +333,7 @@ export function BottomNav({
               }`}
             >
               <Icon className="w-5 h-5 shrink-0" />
-              <span className="text-[12px] font-semibold leading-none whitespace-nowrap">
+              <span className="text-[13px] font-semibold leading-none whitespace-nowrap">
                 {item.label}
               </span>
             </button>
@@ -653,7 +653,7 @@ export function LetterChip({
         {status !== 'locked' && picture && (
           <span
             aria-hidden="true"
-            className="text-[12px] absolute -bottom-1 -left-1 bg-[var(--surface)] rounded-full px-0.5 leading-none border border-[var(--line)]"
+            className="text-[13px] absolute -bottom-1 -left-1 bg-[var(--surface)] rounded-full px-0.5 leading-none border border-[var(--line)]"
           >
             {picture}
           </span>
@@ -669,11 +669,7 @@ export function LetterChip({
         )}
       </button>
       {nameFr && (
-        <span
-          className={`${
-            isLong ? 'text-[11px]' : 'text-[12px]'
-          } font-medium text-[var(--ink)] text-center leading-tight min-w-0 line-clamp-2`}
-        >
+        <span className="text-[13px] font-medium text-[var(--ink)] text-center leading-tight min-w-0 line-clamp-2">
           {nameFr}
         </span>
       )}
@@ -770,13 +766,13 @@ export function Stepper({
             <div className="flex items-center gap-1">
               {isPast ? <Check className="w-3.5 h-3.5 shrink-0" /> : step.iconSvg}
               {isCurrent && (
-                <span className="text-[11px] leading-none whitespace-nowrap">
+                <span className="text-[13px] leading-none whitespace-nowrap">
                   {step.label}
                 </span>
               )}
             </div>
             {!isCurrent && (
-              <span className="text-[10px] leading-none whitespace-nowrap">
+              <span className="text-[13px] leading-none whitespace-nowrap">
                 {step.label}
               </span>
             )}
@@ -1023,7 +1019,7 @@ export function Mascot({
             <text
               x="66"
               y="22"
-              fontSize="10"
+              fontSize="13"
               fontWeight="bold"
               fill="#07463D"
             >
@@ -1164,7 +1160,7 @@ export function ProgressRing({
                 left: `${Math.round(cx - 24)}px`,
                 top: `${Math.round(cy - 24)}px`
               }}
-              className={`absolute w-[48px] h-[48px] min-w-[48px] min-h-[48px] rounded-full flex items-center justify-center font-mono-tag text-[12px] font-bold border-2 pressable cursor-pointer transition-colors ${
+              className={`absolute w-[48px] h-[48px] min-w-[48px] min-h-[48px] rounded-full flex items-center justify-center font-mono-tag text-[13px] font-bold border-2 pressable cursor-pointer transition-colors ${
                 active
                   ? 'bg-[var(--good)] text-white border-[var(--good)]'
                   : partial
@@ -1314,7 +1310,7 @@ export function AntWalkingLoader({ label = 'Chargement...' }: { label?: string }
           />
         </g>
       </svg>
-      <span className="font-mono-tag text-[12px] text-[var(--ink)]/70">
+      <span className="font-mono-tag text-[13px] text-[var(--ink)]/70">
         {label}
       </span>
     </div>
@@ -1434,15 +1430,15 @@ export const CalligraphyAntSvgGroup = React.forwardRef<
             />
           </g>
 
-          {/* Carried diamond dot crumb (shown when ant carries a dot from the side in Phase C) */}
-          <g transform="translate(19, 0) rotate(45)">
+          {/* Carried diamond dot crumb (Phase 2.1: >= 22-unit diagonal) */}
+          <g transform="translate(21, 0) rotate(45)">
             <g className="ant-carried-crumb" style={{ display: 'none' }}>
               <rect
-                x="-4.8"
-                y="-4.8"
-                width="9.6"
-                height="9.6"
-                rx="1.4"
+                x="-7.8"
+                y="-7.8"
+                width="15.6"
+                height="15.6"
+                rx="1.8"
                 fill="#FFB400"
                 stroke="#07463D"
                 strokeWidth="1.5"

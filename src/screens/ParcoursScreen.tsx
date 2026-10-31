@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   Play,
   Flame,
@@ -8,11 +8,13 @@ import {
   Volume2,
   PenTool,
   Gamepad2,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 import { t } from '../data/copyDeck';
 import {
   LETTER_FAMILIES,
-  buildVariedQuizSequence,
+  buildDynamicVowelQuizQuestions,
 } from '../data/lettersAndFamilies';
 import { markDailyMissionDone } from '../services/dataService';
 import {
@@ -24,6 +26,7 @@ import {
 import { NouqtaAppController } from '../hooks/useNouqtaState';
 
 const NODE_OFFSETS = [-36, 36, -36, 36, -36, 36, 0];
+const HOME_PLUS_STORAGE_KEY = 'nouqta_home_plus_open_v1';
 
 export function ParcoursScreen({ app }: { app: NouqtaAppController }) {
   const {
@@ -57,97 +60,41 @@ export function ParcoursScreen({ app }: { app: NouqtaAppController }) {
     showToast,
   } = app;
 
+  const [plusOpen, setPlusOpen] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem(HOME_PLUS_STORAGE_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
+
+  const togglePlusOpen = () => {
+    setPlusOpen((prev) => {
+      const next = !prev;
+      try {
+        window.localStorage.setItem(HOME_PLUS_STORAGE_KEY, next ? '1' : '0');
+      } catch {
+        // Ignore storage error
+      }
+      return next;
+    });
+  };
+
   return (
-    <div className="space-y-[32px] pb-[44px]">
-      {/* Hero TodayCard + Weekly Goal bar + "Demain" blurred silhouette teaser */}
-      <div className="space-y-3">
-        <TodayCard
-          tagText={t('home.hero.tag', mode)}
-          titleText={
-            todayInfo.isFirstRun
-              ? 'Bienvenue'
-              : todayInfo.letter.shortName || todayInfo.letter.nameFr
-          }
-          familyTagText={todayFamilyMonoTag}
-          arabicChar={todayInfo.letter.arabicChar}
-          stepsDone={todayInfo.progress.stepsDone}
-          mode={mode}
-        />
-
-        {/* Weekly Goal progress bar under the hero */}
-        <div
-          data-testid="home-weekly-goal-bar"
-          className="rounded-[18px] bg-[var(--surface)] border border-[var(--line)] px-4 py-3 space-y-2 relative z-20"
-        >
-          <div className="flex items-center justify-between text-[13px] font-semibold">
-            <span className="text-[var(--ink)] flex items-center gap-2">
-              <span>Objectif de la semaine</span>
-              {weeklyGoalReached && (
-                <span className="text-[var(--good)] font-bold">✓ Atteint</span>
-              )}
-            </span>
-            <span className="font-mono-tag text-[var(--brand)] font-bold">
-              {Math.min(weeklyCompletedCount, weeklyGoalTarget)} /{' '}
-              {weeklyGoalTarget} lettres
-            </span>
-          </div>
-          <div className="h-2.5 w-full rounded-full bg-[var(--paper)] overflow-hidden">
-            <div
-              style={{
-                width: `${Math.min(
-                  100,
-                  Math.round((weeklyCompletedCount / weeklyGoalTarget) * 100)
-                )}%`,
-              }}
-              className="h-full bg-[var(--good)] rounded-full transition-all"
-            />
-          </div>
-        </div>
-
-        {/* "Demain" teaser under the hero */}
-        {nextLockedOrTomorrowLetter && (
-          <div className="flex items-center gap-2.5">
-            <button
-              type="button"
-              data-testid="demain-teaser-row"
-              aria-label={`Demain : ${
-                nextLockedOrTomorrowLetter.shortName ||
-                nextLockedOrTomorrowLetter.nameFr
-              }, verrouillée. Toucher pour plus d'informations`}
-              onClick={() =>
-                showToast("Termine aujourd'hui pour la débloquer", 'info')
-              }
-              className="flex-1 min-w-0 min-h-[52px] h-[52px] px-4 rounded-[18px] bg-[var(--surface)]/80 border border-[var(--line)] flex items-center justify-between pressable cursor-pointer relative z-20"
-            >
-              <div className="flex items-center gap-2.5 min-w-0">
-                <Lock className="w-4 h-4 text-[var(--locked)] shrink-0" />
-                <span className="text-[14px] font-semibold text-[var(--ink)] truncate">
-                  Demain :{' '}
-                  {nextLockedOrTomorrowLetter.shortName ||
-                    nextLockedOrTomorrowLetter.nameFr}
-                </span>
-              </div>
-              <span
-                lang="ar"
-                dir="rtl"
-                aria-hidden="true"
-                style={{ filter: 'blur(6px)' }}
-                className="font-arabic text-[30px] text-[var(--ink)]/75 leading-none select-none pointer-events-none shrink-0"
-              >
-                {nextLockedOrTomorrowLetter.arabicChar}
-              </span>
-            </button>
-
-            {mode === 'kids' && (
-              <Mascot
-                pose={userStreak === 0 ? 'sleep' : 'wave'}
-                size={52}
-                mode={mode}
-              />
-            )}
-          </div>
-        )}
-      </div>
+    <div className="space-y-[28px] pb-[44px]">
+      {/* Hero TodayCard */}
+      <TodayCard
+        tagText={t('home.hero.tag', mode)}
+        titleText={
+          todayInfo.isFirstRun
+            ? 'Bienvenue'
+            : todayInfo.letter.shortName || todayInfo.letter.nameFr
+        }
+        familyTagText={todayFamilyMonoTag}
+        arabicChar={todayInfo.letter.arabicChar}
+        stepsDone={todayInfo.progress.stepsDone}
+        mode={mode}
+      />
 
       {/* "3 missions" card */}
       <div
@@ -169,7 +116,7 @@ export function ParcoursScreen({ app }: { app: NouqtaAppController }) {
             >
               {missionsDoneCount}/3
             </span>
-            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[var(--accent)]/20 text-[var(--accent-ink)] dark:text-[var(--accent)] font-mono-tag text-[12px] font-bold">
+            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[var(--accent)]/20 text-[var(--accent-ink)] dark:text-[var(--accent)] font-mono-tag text-[13px] font-bold">
               <Star className="w-3.5 h-3.5 fill-current" />
               <span>+1</span>
             </span>
@@ -245,7 +192,7 @@ export function ParcoursScreen({ app }: { app: NouqtaAppController }) {
                     {m.done && <Check className="w-3 h-3" />}
                   </span>
                 </div>
-                <span className="text-[12px] font-bold leading-tight mt-1">
+                <span className="text-[13px] font-bold leading-tight mt-1">
                   {m.label}
                 </span>
               </button>
@@ -254,60 +201,166 @@ export function ParcoursScreen({ app }: { app: NouqtaAppController }) {
         </div>
       </div>
 
-      {/* Dedicated lesson "Les voyelles courtes" */}
+      {/* PHASE 4.2: Collapsible block "Plus" (closed by default, state remembered) containing Weekly Goal, "Demain" teaser, and Vowels card */}
       <div
-        data-testid="harakat-mini-lesson-card"
-        className="rounded-[24px] bg-[var(--surface)] border border-[var(--line)] p-4 flex items-center justify-between gap-3 relative z-20"
+        data-testid="home-plus-collapsible"
+        className="rounded-[24px] bg-[var(--surface)] border border-[var(--line)] overflow-hidden relative z-20"
       >
-        <div className="min-w-0">
-          <span className="font-mono-tag text-[var(--brand)] block">
-            APRÈS FAMILLE 1 · HARAKAT
-          </span>
-          <h3 className="font-display text-[18px] text-[var(--ink)]">
-            Les voyelles courtes
-          </h3>
-        </div>
-        <div className="flex items-center gap-2 shrink-0">
-          <button
-            type="button"
-            data-testid="open-harakat-cards-btn"
-            aria-label="Ouvrir la leçon Les voyelles courtes"
-            onClick={() => {
-              setHarakatCardIdx(0);
-              setShowHarakatLessonSheet(true);
-            }}
-            className="min-h-[48px] h-[48px] px-3.5 rounded-[14px] bg-[var(--paper)] border border-[var(--brand)] text-[var(--brand)] font-bold text-[13px] pressable cursor-pointer"
+        <button
+          type="button"
+          data-testid="home-plus-toggle-btn"
+          aria-expanded={plusOpen}
+          aria-label="Afficher ou masquer la section Plus (objectif hebdomadaire, lettre de demain et voyelles courtes)"
+          onClick={togglePlusOpen}
+          className="w-full min-h-[54px] px-4 py-3 flex items-center justify-between gap-3 pressable cursor-pointer text-left"
+        >
+          <div className="flex items-center gap-2.5 min-w-0">
+            <span className="font-display text-[18px] text-[var(--ink)]">
+              Plus
+            </span>
+            <span className="text-[13px] text-[var(--ink)]/70 truncate">
+              Objectif ({Math.min(weeklyCompletedCount, weeklyGoalTarget)}/{weeklyGoalTarget}) · Demain · Voyelles
+            </span>
+          </div>
+          {plusOpen ? (
+            <ChevronUp className="w-5 h-5 text-[var(--brand)] shrink-0" />
+          ) : (
+            <ChevronDown className="w-5 h-5 text-[var(--brand)] shrink-0" />
+          )}
+        </button>
+
+        {plusOpen && (
+          <div
+            data-testid="home-plus-content"
+            className="px-4 pb-4 pt-1 space-y-3 border-t border-[var(--line)]"
           >
-            3 cartes
-          </button>
-          <button
-            type="button"
-            data-testid="open-vowel-quiz-btn"
-            aria-label="Lancer le quiz Lecture voyelle"
-            onClick={() => {
-              const learnedF1 = letters
-                .slice(0, 4)
-                .filter((l) => learnedLetterIds.includes(l.id));
-              const qList = buildVariedQuizSequence(
-                learnedF1.length > 0 ? learnedF1 : letters.slice(0, 1),
-                5,
-                mode === 'kids' ? 3 : 4
-              );
-              setActiveExam({
-                kind: 'vowels',
-                questions: qList,
-                currentIndex: 0,
-                selectedOpt: null,
-                answered: false,
-                correctCount: 0,
-                finished: false,
-              });
-            }}
-            className="min-h-[48px] h-[48px] px-3.5 rounded-[14px] bg-[var(--brand-deep)] text-white font-bold text-[13px] pressable cursor-pointer"
-          >
-            Lecture voyelle
-          </button>
-        </div>
+            {/* Weekly Goal progress bar */}
+            <div
+              data-testid="home-weekly-goal-bar"
+              className="rounded-[18px] bg-[var(--paper)] border border-[var(--line)] px-4 py-3 space-y-2"
+            >
+              <div className="flex items-center justify-between text-[13px] font-semibold">
+                <span className="text-[var(--ink)] flex items-center gap-2">
+                  <span>Objectif de la semaine</span>
+                  {weeklyGoalReached && (
+                    <span className="text-[var(--good)] font-bold">✓ Atteint</span>
+                  )}
+                </span>
+                <span className="font-mono-tag text-[var(--brand)] font-bold">
+                  {Math.min(weeklyCompletedCount, weeklyGoalTarget)} /{' '}
+                  {weeklyGoalTarget} lettres
+                </span>
+              </div>
+              <div className="h-2.5 w-full rounded-full bg-[var(--surface)] overflow-hidden">
+                <div
+                  style={{
+                    width: `${Math.min(
+                      100,
+                      Math.round((weeklyCompletedCount / weeklyGoalTarget) * 100)
+                    )}%`,
+                  }}
+                  className="h-full bg-[var(--good)] rounded-full transition-all"
+                />
+              </div>
+            </div>
+
+            {/* "Demain" teaser */}
+            {nextLockedOrTomorrowLetter && (
+              <div className="flex items-center gap-2.5">
+                <button
+                  type="button"
+                  data-testid="demain-teaser-row"
+                  aria-label={`Demain : ${
+                    nextLockedOrTomorrowLetter.shortName ||
+                    nextLockedOrTomorrowLetter.nameFr
+                  }, verrouillée. Toucher pour plus d'informations`}
+                  onClick={() =>
+                    showToast("Termine aujourd'hui pour la débloquer", 'info')
+                  }
+                  className="flex-1 min-w-0 min-h-[52px] h-[52px] px-4 rounded-[18px] bg-[var(--paper)] border border-[var(--line)] flex items-center justify-between pressable cursor-pointer"
+                >
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <Lock className="w-4 h-4 text-[var(--locked)] shrink-0" />
+                    <span className="text-[14px] font-semibold text-[var(--ink)] truncate">
+                      Demain :{' '}
+                      {nextLockedOrTomorrowLetter.shortName ||
+                        nextLockedOrTomorrowLetter.nameFr}
+                    </span>
+                  </div>
+                  <span
+                    lang="ar"
+                    dir="rtl"
+                    aria-hidden="true"
+                    style={{ filter: 'blur(6px)' }}
+                    className="font-arabic text-[30px] text-[var(--ink)]/75 leading-none select-none pointer-events-none shrink-0"
+                  >
+                    {nextLockedOrTomorrowLetter.arabicChar}
+                  </span>
+                </button>
+
+                {mode === 'kids' && (
+                  <Mascot
+                    pose={userStreak === 0 ? 'sleep' : 'wave'}
+                    size={52}
+                    mode={mode}
+                  />
+                )}
+              </div>
+            )}
+
+            {/* Dedicated lesson "Les voyelles courtes" */}
+            <div
+              data-testid="harakat-mini-lesson-card"
+              className="rounded-[20px] bg-[var(--paper)] border border-[var(--line)] p-3.5 flex flex-wrap items-center justify-between gap-2.5"
+            >
+              <div className="min-w-0">
+                <span className="font-mono-tag text-[var(--brand)] block">
+                  APRÈS FAMILLE 1 · HARAKAT
+                </span>
+                <h3 className="font-display text-[18px] text-[var(--ink)]">
+                  Les voyelles courtes
+                </h3>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  data-testid="open-harakat-cards-btn"
+                  aria-label="Ouvrir la leçon Les voyelles courtes"
+                  onClick={() => {
+                    setHarakatCardIdx(0);
+                    setShowHarakatLessonSheet(true);
+                  }}
+                  className="min-h-[48px] h-[48px] px-3.5 rounded-[14px] bg-[var(--surface)] border border-[var(--brand)] text-[var(--brand)] font-bold text-[13px] pressable cursor-pointer"
+                >
+                  3 cartes
+                </button>
+                <button
+                  type="button"
+                  data-testid="open-vowel-quiz-btn"
+                  aria-label="Lancer le quiz Lecture voyelle"
+                  onClick={() => {
+                    const qList = buildDynamicVowelQuizQuestions(
+                      learnedLetterIds,
+                      6
+                    );
+                    setActiveExam({
+                      kind: 'vowels',
+                      questions: qList,
+                      currentIndex: 0,
+                      selectedOpt: null,
+                      answered: false,
+                      correctCount: 0,
+                      finished: false,
+                    });
+                  }}
+                  className="min-h-[48px] h-[48px] px-3.5 rounded-[14px] bg-[var(--brand-deep)] text-white font-bold text-[13px] pressable cursor-pointer"
+                >
+                  Lecture voyelle
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Winding Path of 7 Letter-Family Nodes + Locked "Voyelles et signes" ("Bientôt") */}
@@ -399,11 +452,11 @@ export function ParcoursScreen({ app }: { app: NouqtaAppController }) {
               <span className="font-bold text-[15px] text-[var(--ink)]">
                 Voyelles et signes
               </span>
-              <span className="px-2 py-0.5 rounded-full bg-[var(--accent)]/20 text-[var(--accent-ink)] dark:text-[var(--accent)] font-mono-tag text-[10px] font-bold">
+              <span className="px-2 py-0.5 rounded-full bg-[var(--accent)]/20 text-[var(--accent-ink)] dark:text-[var(--accent)] font-mono-tag text-[13px] font-bold">
                 Bientôt
               </span>
             </div>
-            <span className="text-[12px] text-[var(--ink)]/70 block">
+            <span className="text-[13px] text-[var(--ink)]/70 block">
               Sukun · Shadda · Tanwin · Voyelles longues
             </span>
           </div>

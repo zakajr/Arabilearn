@@ -27,6 +27,7 @@ import {
   getDotRectSide,
   sampleSvgPathEqualLength,
 } from '../lib/strokeMath';
+import { getGlyphOutline } from '../lib/fontGlyphs';
 import { speechService } from '../services/speech';
 import {
   Mascot,
@@ -292,11 +293,11 @@ export function buildDotHuntRounds(
   const learnedDotted = LETTERS_DATA.filter(
     (l) => allowedSet.has(l.id) && l.dots.count > 0
   );
-  // Fallback to canonical dotted letters if caller passed fewer than 2 dotted letters
-  const dottedPool =
-    learnedDotted.length >= 2
-      ? learnedDotted
-      : LETTERS_DATA.filter((l) => l.dots.count > 0).slice(0, 3);
+  // Phase 3.2: Return [] when < 2 learned letters have dots (UI switches to Mémoire)
+  if (learnedDotted.length < 2) {
+    return [];
+  }
+  const dottedPool = learnedDotted;
 
   const rng = createSeededRng(`dothunt_${seedStr}`);
   const allConfigs: {
@@ -967,11 +968,11 @@ export function MiniGamePlayView({
         </h3>
         <StarRating stars={earnedStars} />
         <div className="flex items-center justify-center gap-3">
-          <div className="px-3.5 py-1.5 rounded-full bg-[var(--accent)]/20 text-[var(--accent-ink)] dark:text-[var(--accent)] font-mono-tag text-[12px] font-bold flex items-center gap-1.5">
+          <div className="px-3.5 py-1.5 rounded-full bg-[var(--accent)]/20 text-[var(--accent-ink)] dark:text-[var(--accent)] font-mono-tag text-[13px] font-bold flex items-center gap-1.5">
             <Flame className="w-4 h-4 fill-current" />
             <span>Combo max ×{Math.max(1, maxCombo)}</span>
           </div>
-          <div className="px-3.5 py-1.5 rounded-full bg-[var(--good)]/15 text-[var(--good)] font-mono-tag text-[12px] font-bold flex items-center gap-1.5">
+          <div className="px-3.5 py-1.5 rounded-full bg-[var(--good)]/15 text-[var(--good)] font-mono-tag text-[13px] font-bold flex items-center gap-1.5">
             <Star className="w-4 h-4 fill-current" />
             <span>+{earnedStars} étoiles</span>
           </div>
@@ -1022,7 +1023,7 @@ export function MiniGamePlayView({
       <div className="flex items-center justify-between gap-2">
         <span
           data-testid="minigame-round-counter"
-          className="font-mono-tag text-[12px] font-bold text-[var(--brand)]"
+          className="font-mono-tag text-[13px] font-bold text-[var(--brand)]"
         >
           {effectiveGameId === 'memoire'
             ? `PAIRES ${matchedCardIds.length / 2}/3`
@@ -1035,7 +1036,7 @@ export function MiniGamePlayView({
           )}
           <div
             data-testid="minigame-combo-badge"
-            className="px-3 py-1 rounded-full bg-[var(--accent)]/20 text-[var(--accent-ink)] dark:text-[var(--accent)] font-mono-tag text-[12px] font-bold flex items-center gap-1"
+            className="px-3 py-1 rounded-full bg-[var(--accent)]/20 text-[var(--accent-ink)] dark:text-[var(--accent)] font-mono-tag text-[13px] font-bold flex items-center gap-1"
           >
             <Flame className="w-3.5 h-3.5 fill-current" />
             <span>COMBO ×{combo}</span>
@@ -1067,7 +1068,7 @@ export function MiniGamePlayView({
               data-testid="memory-matched-side-tray"
               className="flex items-center justify-end gap-1.5 px-2.5 py-1.5 rounded-xl bg-[var(--good)]/10 border border-[var(--good)]/30"
             >
-              <span className="text-[11px] font-mono-tag font-bold text-[var(--good)] mr-auto">
+              <span className="text-[13px] font-mono-tag font-bold text-[var(--good)] mr-auto">
                 Paires trouvées :
               </span>
               {memoryDeck
@@ -1181,7 +1182,7 @@ export function MiniGamePlayView({
                       >
                         {card.display}
                       </span>
-                      <span className="text-[11px] font-semibold text-[var(--ink)]/80 truncate max-w-full">
+                      <span className="text-[13px] font-semibold text-[var(--ink)]/80 truncate max-w-full">
                         {card.subLabel}
                       </span>
                     </>
@@ -1197,17 +1198,21 @@ export function MiniGamePlayView({
         </div>
       )}
 
-      {/* 2. CHASSE AUX POINTS — REDESIGNED (FIX D)
-          - Rounds 1-3 (roundIdx 0..2): "Choisis le bon point" — 3 big stacked cards (90px high),
-            each the REAL letter body with a different dot configuration (count 0-3, above or below)
-            computed from the body's bounding box with the clearance rule in strokeMath.
-          - Rounds 4-5 (roundIdx 3..4): "Place les points toi-même" — body shown with NO hints,
-            learner taps to place/remove dots, then presses "Valider". */}
+      {/* 2. CHASSE AUX POINTS — REDESIGNED (FIX D & PHASE 2.3 / 2.4)
+          - Rounds 1-3 (roundIdx 0..2): "Choisis le bon point" — 3 big stacked cards (>= 110px wide, >= 96px high),
+            each the REAL letter body with a different dot configuration (count 0-3, above or below),
+            dots at >= 22 units diagonal.
+          - Rounds 4-5 (roundIdx 3..4): "Place les points toi-même" — canvas >= 85% of card width,
+            hint text >= 14px. */}
       {effectiveGameId === 'chasse_points' &&
         (() => {
           const r = dotHuntRounds[roundIdx] || dotHuntRounds[0];
           if (!r) return null;
           const glyph = r.letter.forms.isolated;
+          const fontOutline = getGlyphOutline(r.letter.id, 'isolated');
+          const useFontBody =
+            (glyph.renderMode === 'font' || glyph.status === 'aligne') &&
+            Boolean(fontOutline.bodyPath);
           const bodyStrokes = glyph.strokes.filter(
             (s): s is GlyphBodyStroke => s.kind === 'body'
           );
@@ -1222,8 +1227,6 @@ export function MiniGamePlayView({
             dotsCount: 0 | 1 | 2 | 3,
             dotsPosition: 'above' | 'below' | 'none'
           ) => {
-            // For the exact correct configuration, use the letter's authored clearance-enforced dotStrokes;
-            // for distractor configurations, compute from the body's bounding box with the clearance rule in strokeMath.
             const coords: [number, number][] =
               dotsCount === r.letter.dots.count &&
               dotsPosition === r.letter.dots.position
@@ -1237,7 +1240,7 @@ export function MiniGamePlayView({
             return (
               <svg
                 viewBox="0 0 200 200"
-                className="w-[74px] h-[74px] shrink-0 overflow-visible"
+                className="w-[84px] h-[84px] min-w-[84px] shrink-0 overflow-visible"
               >
                 <line
                   x1="20"
@@ -1248,17 +1251,21 @@ export function MiniGamePlayView({
                   strokeWidth="1.5"
                   strokeDasharray="4 4"
                 />
-                {bodyStrokes.map((bs) => (
-                  <path
-                    key={bs.id}
-                    d={bs.d}
-                    fill="none"
-                    stroke="#07463D"
-                    strokeWidth={bs.width}
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                ))}
+                {useFontBody ? (
+                  <path d={fontOutline.bodyPath} fill="#07463D" />
+                ) : (
+                  bodyStrokes.map((bs) => (
+                    <path
+                      key={bs.id}
+                      d={bs.d}
+                      fill="none"
+                      stroke="#07463D"
+                      strokeWidth={bs.width}
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  ))
+                )}
                 {coords.map((pt, idx) => (
                   <g
                     key={idx}
@@ -1298,7 +1305,7 @@ export function MiniGamePlayView({
                     >
                       {promptInfo.promptFr}
                     </p>
-                    <p className="text-[12px] font-medium text-[var(--ink)]/75 truncate">
+                    <p className="text-[13px] font-medium text-[var(--ink)]/75 truncate">
                       {r.letter.keywordFr} ·{' '}
                       <span lang="ar" dir="rtl" className="font-arabic">
                         {r.letter.keyword}
@@ -1317,7 +1324,7 @@ export function MiniGamePlayView({
               </div>
 
               {r.roundKind === 'choose_card' ? (
-                /* ROUNDS 1-3: 3 big stacked cards (90px high), each the REAL letter body with a different dot configuration */
+                /* ROUNDS 1-3: 3 big stacked cards (>= 110px wide, >= 96px high), each the REAL letter body with a different dot configuration */
                 <div
                   data-testid="dothunt-choose-cards-list"
                   className="flex flex-col gap-2.5"
@@ -1353,7 +1360,7 @@ export function MiniGamePlayView({
                             recordMistake(answerDisplay);
                           }
                         }}
-                        className={`h-[90px] min-h-[90px] w-full rounded-[18px] border-2 px-4 flex items-center justify-between pressable cursor-pointer transition-all ${cardStyle}`}
+                        className={`min-w-[110px] h-[96px] min-h-[96px] w-full rounded-[18px] border-2 px-4 flex items-center justify-between pressable cursor-pointer transition-all ${cardStyle}`}
                       >
                         <span className="text-[15px] font-bold text-[var(--ink)] text-left">
                           {opt.labelFr}
@@ -1367,12 +1374,15 @@ export function MiniGamePlayView({
                   })}
                 </div>
               ) : (
-                /* ROUNDS 4-5: "Place les points toi-même" — body shown with NO hints, tap to place/remove dots, then press "Valider" */
+                /* ROUNDS 4-5: "Place les points toi-même" — canvas >= 85% of card width, hint text >= 14px */
                 <div
                   data-testid="dothunt-place-dots-stage"
-                  className="flex flex-col items-center gap-2.5"
+                  className="flex flex-col items-center gap-2.5 w-full"
                 >
-                  <p className="text-[12px] font-medium text-[var(--ink)]/75">
+                  <p
+                    data-testid="dothunt-place-dots-hint"
+                    className="text-[14px] font-medium text-[var(--ink)]/85"
+                  >
                     Touche autour de la lettre pour poser ou retirer un point (
                     {placedCustomDots.length} posé
                     {placedCustomDots.length > 1 ? 's' : ''})
@@ -1381,7 +1391,7 @@ export function MiniGamePlayView({
                   <svg
                     viewBox="0 0 200 200"
                     data-testid="dothunt-interactive-canvas"
-                    className="w-[188px] h-[188px] rounded-[22px] bg-[var(--surface)] border-2 border-[var(--line)] touch-none cursor-crosshair"
+                    className="w-[88%] min-w-[85%] max-w-[320px] aspect-square rounded-[22px] bg-[var(--surface)] border-2 border-[var(--line)] touch-none cursor-crosshair mx-auto"
                     onPointerDown={(e) => {
                       if (inputLocked) return;
                       e.preventDefault();
@@ -1421,17 +1431,21 @@ export function MiniGamePlayView({
                       strokeWidth="1.5"
                       strokeDasharray="5 5"
                     />
-                    {bodyStrokes.map((bs) => (
-                      <path
-                        key={bs.id}
-                        d={bs.d}
-                        fill="none"
-                        stroke="#07463D"
-                        strokeWidth={bs.width}
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
-                    ))}
+                    {useFontBody ? (
+                      <path d={fontOutline.bodyPath} fill="#07463D" />
+                    ) : (
+                      bodyStrokes.map((bs) => (
+                        <path
+                          key={bs.id}
+                          d={bs.d}
+                          fill="none"
+                          stroke="#07463D"
+                          strokeWidth={bs.width}
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      ))
+                    )}
 
                     {/* Learner's placed dots */}
                     {placedCustomDots.map((d, idx) => (
@@ -1748,7 +1762,7 @@ export function MiniGamePlayView({
                     <div className="font-bold text-[15px] text-[var(--ink)] truncate">
                       {r.promptFr}
                     </div>
-                    <div className="text-[12px] text-[var(--ink)]/70">
+                    <div className="text-[13px] text-[var(--ink)]/70">
                       {r.targetLetterIds.length} lettres · glisse de droite à
                       gauche
                     </div>
@@ -1878,7 +1892,7 @@ export function MiniGamePlayView({
                     <button
                       type="button"
                       onClick={revealNextStroke}
-                      className="min-h-[48px] px-3 rounded-full bg-[var(--surface)] border border-[var(--line)] text-[12px] font-bold text-[var(--brand)] pressable cursor-pointer shrink-0 flex items-center gap-1"
+                      className="min-h-[48px] px-3 rounded-full bg-[var(--surface)] border border-[var(--line)] text-[13px] font-bold text-[var(--brand)] pressable cursor-pointer shrink-0 flex items-center gap-1"
                     >
                       <Hand className="w-3.5 h-3.5" />
                       <span>+1 trait</span>
@@ -1929,7 +1943,7 @@ export function MiniGamePlayView({
                     )
                   )}
                 </svg>
-                <span className="absolute bottom-1.5 right-2.5 text-[10px] font-mono-tag text-[var(--ink)]/60">
+                <span className="absolute bottom-1.5 right-2.5 text-[13px] font-mono-tag text-[var(--ink)]/60">
                   {visibleStrokes.length}/{allStrokes.length}
                 </span>
               </div>
@@ -1975,11 +1989,6 @@ export function MiniGamePlayView({
 
       {/* =====================================================================
           FIX C (3, 4, 7): Pinned Validation Panel at the bottom of the game card.
-          - Green panel on win: check icon, feedback sentence, correct answer (letter + word with picture),
-            ant in cheer pose (Kids).
-          - Neutral panel after 2 mistakes in the same round: "Voici la réponse" + correct answer.
-          - Saffron button "Continuer" (on round 5 or last pair in Mémoire: "Voir mon résultat").
-          - Only that button advances roundIdx.
          ===================================================================== */}
       {roundState === 'won' && revealedAnswer && (
         <div
@@ -2042,7 +2051,7 @@ export function MiniGamePlayView({
                   {revealedAnswer.labelFr}
                 </span>
                 {(revealedAnswer.wordFr || revealedAnswer.wordAr) && (
-                  <span className="text-[12px] font-medium text-[var(--ink)]/75 truncate">
+                  <span className="text-[13px] font-medium text-[var(--ink)]/75 truncate">
                     {revealedAnswer.wordFr ? `${revealedAnswer.wordFr} · ` : ''}
                     {revealedAnswer.wordAr && (
                       <span lang="ar" dir="rtl" className="font-arabic">

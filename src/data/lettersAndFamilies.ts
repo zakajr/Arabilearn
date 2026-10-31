@@ -1,3 +1,5 @@
+import { AMIRI_PRECOMPUTED_GLYPHS } from '../lib/fontGlyphsData';
+import { getGlyphOutline } from '../lib/fontGlyphs';
 import { GlyphForm } from '../lib/strokeMath';
 
 export type FamilyId = 'F1' | 'F2' | 'F3' | 'F4' | 'F5' | 'F6' | 'F7';
@@ -76,6 +78,8 @@ export interface QuizQuestion {
   letterId?: string;
   familyId?: FamilyId;
   type: QuizQuestionType;
+  kind?: 'hear_and_choose' | 'read_and_choose';
+  vowelQuizKind?: 'hear_and_choose' | 'read_and_choose';
   promptFr: string;
   promptArabic?: string;
   promptPicture?: string;
@@ -161,47 +165,66 @@ function makeGlyph(
   dotPos: 'above' | 'below' | 'inside' | 'none',
   arrangement?: 'none' | 'single' | 'row' | 'triangle_up'
 ): GlyphForm {
+  const precomputed = AMIRI_PRECOMPUTED_GLYPHS[letterId]?.isolated;
+  const effectiveDots: [number, number][] = precomputed
+    ? precomputed.dots.map((d) => [d.cx, d.cy])
+    : dots;
   const inferredArrangement: 'none' | 'single' | 'row' | 'triangle_up' =
     arrangement ??
-    (dots.length === 0
+    (effectiveDots.length === 0
       ? 'none'
-      : dots.length === 1
+      : effectiveDots.length === 1
       ? 'single'
-      : dots.length === 2
+      : effectiveDots.length === 2
       ? 'row'
       : 'triangle_up');
-  const dotSize = 12.6; // 0.9 * 14 strokeWidth (7% of 200-unit viewBox height)
+  const dotSize = 22.1; // Phase 2.1: diagonal >= 22 units in the 200x200 lesson canvas
+  const bodyStrokes = precomputed
+    ? precomputed.strokes.map((st, idx) => ({
+        id: idx + 1,
+        kind: 'body' as const,
+        d: st.d,
+        width: 14,
+        corridor: 22,
+        startDot: [st.startDot[0], st.startDot[1]] as [number, number],
+        direction: st.direction
+      }))
+    : [
+        {
+          id: 1,
+          kind: 'body' as const,
+          d: bodyD,
+          width: 14,
+          corridor: 22,
+          startDot,
+          direction
+        }
+      ];
+
   return {
     letterId,
     form: 'isolated',
     viewBox: '0 0 200 200',
-    baseline: 120,
+    baseline: precomputed?.baseline ?? 120,
     strokes: [
-      {
-        id: 1,
-        kind: 'body',
-        d: bodyD,
-        width: 14,
-        corridor: 22,
-        startDot,
-        direction
-      },
-      ...dots.map((at, idx) => ({
-        id: idx + 2,
+      ...bodyStrokes,
+      ...effectiveDots.map((at, idx) => ({
+        id: bodyStrokes.length + idx + 1,
         kind: 'dot' as const,
         at,
-        radius: 6.3,
+        radius: 11.05,
         size: dotSize,
         arrangement: inferredArrangement
       }))
     ],
     dotRule: {
-      count: dots.length,
+      count: effectiveDots.length,
       position: dotPos === 'inside' ? 'below' : dotPos,
       arrangement: inferredArrangement,
       size: dotSize
     },
-    status: 'brouillon'
+    status: 'aligne',
+    renderMode: 'font'
   };
 }
 
@@ -981,39 +1004,15 @@ const RAW_LETTERS_DATA: Omit<
     connects: true,
     formsText: { isolated: 'ك', initial: 'كـ', medial: 'ـكـ', final: 'ـك' },
     forms: {
-      isolated: {
-        letterId: 'kaaf',
-        form: 'isolated',
-        viewBox: '0 0 200 200',
-        baseline: 120,
-        strokes: [
-          {
-            id: 1,
-            kind: 'body',
-            d: 'M 142 40 L 142 120 L 54 120',
-            width: 14,
-            corridor: 22,
-            startDot: [142, 40],
-            direction: 'down'
-          },
-          {
-            id: 2,
-            kind: 'body',
-            d: 'M 110 66 L 86 90',
-            width: 14,
-            corridor: 22,
-            startDot: [110, 66],
-            direction: 'rtl'
-          }
-        ],
-        dotRule: {
-          count: 0,
-          position: 'none',
-          arrangement: 'none',
-          size: 12.6
-        },
-        status: 'brouillon'
-      }
+      isolated: makeGlyph(
+        'kaaf',
+        'M 116 45 L 124 109 L 118 114 L 106 116 L 79 115',
+        [116, 45],
+        'down',
+        [],
+        'none',
+        'none'
+      )
     },
     soundUrl: null,
     speechText: 'كَاف',
@@ -1476,52 +1475,47 @@ export interface PositionalFormSpec {
   labelFr: 'Isolée' | 'Début' | 'Milieu' | 'Fin';
   arabicDisplay: string;
   svgPathD: string;
+  bodyPath: string;
+  dots: { cx: number; cy: number; path: string }[];
+  baseline: number;
   isDraft: boolean;
 }
 
 export function getPositionalFormsForLetter(
   letter: LetterRecord
 ): PositionalFormSpec[] {
-  const baseBody =
-    letter.forms.isolated.strokes.find((s) => s.kind === 'body')?.d ||
-    'M 140 90 L 60 90';
-
-  const isolatedSpec: PositionalFormSpec = {
-    key: 'isolated',
-    labelFr: 'Isolée',
-    arabicDisplay: letter.formsText.isolated,
-    svgPathD: baseBody,
-    isDraft: false
+  const buildSpec = (
+    key: PositionalFormKey,
+    labelFr: 'Isolée' | 'Début' | 'Milieu' | 'Fin',
+    arabicDisplay: string
+  ): PositionalFormSpec => {
+    const outline = getGlyphOutline(letter.id, key);
+    const pre = AMIRI_PRECOMPUTED_GLYPHS[letter.id]?.[key];
+    const centerD =
+      pre?.strokes?.[0]?.d ||
+      letter.forms.isolated.strokes.find((s) => s.kind === 'body')?.d ||
+      'M 140 90 L 60 90';
+    return {
+      key,
+      labelFr,
+      arabicDisplay,
+      svgPathD: centerD,
+      bodyPath: outline.bodyPath,
+      dots: outline.dots.map((d) => ({ cx: d.cx, cy: d.cy, path: d.path })),
+      baseline: outline.baseline,
+      isDraft: false
+    };
   };
 
-  const finalSpec: PositionalFormSpec = {
-    key: 'final',
-    labelFr: 'Fin',
-    arabicDisplay: letter.formsText.final,
-    svgPathD: `M 176 120 L 148 120 ${baseBody.replace(/^M\s*[\d.]+\s*[\d.]+/, 'L 132 104')}`,
-    isDraft: true
-  };
+  const isolatedSpec = buildSpec('isolated', 'Isolée', letter.formsText.isolated);
+  const finalSpec = buildSpec('final', 'Fin', letter.formsText.final);
 
   if (!letter.connects) {
-    // Letters that do not connect (Alif, Daal, Dhaal, Raa, Zaay, Waaw) show ONLY isolée + fin (Phase D1)
     return [isolatedSpec, finalSpec];
   }
 
-  const initialSpec: PositionalFormSpec = {
-    key: 'initial',
-    labelFr: 'Début',
-    arabicDisplay: letter.formsText.initial,
-    svgPathD: `${baseBody} L 30 120`,
-    isDraft: true
-  };
-
-  const medialSpec: PositionalFormSpec = {
-    key: 'medial',
-    labelFr: 'Milieu',
-    arabicDisplay: letter.formsText.medial,
-    svgPathD: `M 176 120 L 146 120 ${baseBody.replace(/^M\s*[\d.]+\s*[\d.]+/, 'L 130 104')} L 26 120`,
-    isDraft: true
-  };
+  const initialSpec = buildSpec('initial', 'Début', letter.formsText.initial);
+  const medialSpec = buildSpec('medial', 'Milieu', letter.formsText.medial);
 
   return [isolatedSpec, initialSpec, medialSpec, finalSpec];
 }
@@ -2165,45 +2159,146 @@ export function buildSingleTypedQuestion(
 
     case 'vowel_read':
     default: {
-      const correctOpt = {
-        id: 'v_a',
-        label: `${letter.vowels.a.arabic} (${letter.vowels.a.sound})`,
-        isArabic: true,
-        audioText: letter.vowels.a.arabic
-      };
-      const wrongOpts = [
-        {
-          id: 'v_i',
-          label: `${letter.vowels.i.arabic} (${letter.vowels.i.sound})`,
-          isArabic: true,
-          audioText: letter.vowels.i.arabic
-        },
-        {
-          id: 'v_u',
-          label: `${letter.vowels.u.arabic} (${letter.vowels.u.sound})`,
-          isArabic: true,
-          audioText: letter.vowels.u.arabic
-        }
+      // Phase 3.1: Two question kinds only, never mixed:
+      // - hear_and_choose: speaker button; options are the 3 syllable glyphs (no transliteration)
+      // - read_and_choose: show the syllable glyph in the prompt; options are 3 transliterations as text
+      const vowelList = [
+        { key: 'a', arabic: letter.vowels.a.arabic, sound: letter.vowels.a.sound, markName: 'Fatha' },
+        { key: 'i', arabic: letter.vowels.i.arabic, sound: letter.vowels.i.sound, markName: 'Kasra' },
+        { key: 'u', arabic: letter.vowels.u.arabic, sound: letter.vowels.u.sound, markName: 'Damma' }
       ];
-      const placed = placeCorrectAtSlot(
-        correctOpt,
-        wrongOpts,
-        targetCorrectSlot % 3
-      );
-      return {
-        id: `q_${letter.id}_vow_${targetCorrectSlot}`,
-        letterId: letter.id,
-        familyId: letter.family,
-        type: 'vowel_read',
-        promptFr: `Lecture voyelle : quel est le son « ${letter.vowels.a.sound} » ?`,
-        promptArabic: letter.vowels.a.arabic,
-        audioText: letter.vowels.a.arabic,
-        options: placed.options,
-        correctIndex: placed.correctIndex,
-        explanationFr: `${letter.vowels.a.arabic} se lit « ${letter.vowels.a.sound} » avec Fatha.`
-      };
+      const targetIdx = (letter.order + targetCorrectSlot) % 3;
+      const targetV = vowelList[targetIdx];
+      const otherVs = vowelList.filter((_, idx) => idx !== targetIdx);
+      const isHearAndChoose = targetCorrectSlot % 2 === 0;
+
+      if (isHearAndChoose) {
+        const correctOpt = {
+          id: `v_hear_${targetV.key}`,
+          label: targetV.arabic,
+          isArabic: true,
+          audioText: targetV.arabic
+        };
+        const wrongOpts = otherVs.map((v) => ({
+          id: `v_hear_${v.key}`,
+          label: v.arabic,
+          isArabic: true,
+          audioText: v.arabic
+        }));
+        const placed = placeCorrectAtSlot(
+          correctOpt,
+          wrongOpts,
+          targetCorrectSlot % 3
+        );
+        return {
+          id: `q_${letter.id}_vow_hear_${targetCorrectSlot}`,
+          letterId: letter.id,
+          familyId: letter.family,
+          type: 'vowel_read',
+          kind: 'hear_and_choose',
+          vowelQuizKind: 'hear_and_choose',
+          promptFr: 'Écoutez et choisissez la syllabe entendue :',
+          audioText: targetV.arabic,
+          options: placed.options,
+          correctIndex: placed.correctIndex,
+          explanationFr: `${targetV.arabic} se lit « ${targetV.sound} » (${targetV.markName}).`
+        };
+      } else {
+        const correctOpt = {
+          id: `v_read_${targetV.key}`,
+          label: targetV.sound,
+          isArabic: false
+        };
+        const wrongOpts = otherVs.map((v) => ({
+          id: `v_read_${v.key}`,
+          label: v.sound,
+          isArabic: false
+        }));
+        const placed = placeCorrectAtSlot(
+          correctOpt,
+          wrongOpts,
+          targetCorrectSlot % 3
+        );
+        return {
+          id: `q_${letter.id}_vow_read_${targetCorrectSlot}`,
+          letterId: letter.id,
+          familyId: letter.family,
+          type: 'vowel_read',
+          kind: 'read_and_choose',
+          vowelQuizKind: 'read_and_choose',
+          promptFr: 'Comment se lit cette syllabe ?',
+          promptArabic: targetV.arabic,
+          audioText: targetV.arabic,
+          options: placed.options,
+          correctIndex: placed.correctIndex,
+          explanationFr: `${targetV.arabic} se lit « ${targetV.sound} » (${targetV.markName}).`
+        };
+      }
     }
   }
+}
+
+/**
+ * Phase 3.1: Dedicated "Lecture voyelle" quiz builder returning strictly
+ * `hear_and_choose` (speaker prompt + 3 syllable glyphs, no transliteration) or
+ * `read_and_choose` (syllable glyph in prompt + 3 transliterations as text, no Arabic glyphs in options).
+ */
+export function buildDynamicVowelQuizQuestions(
+  poolLettersOrIds: (LetterRecord | string)[],
+  count = 6
+): QuizQuestion[] {
+  const resolvedPool: LetterRecord[] = (poolLettersOrIds || [])
+    .map((item) =>
+      typeof item === 'string'
+        ? LETTERS_DATA.find((l) => l.id === item)
+        : item
+    )
+    .filter((l): l is LetterRecord => Boolean(l));
+  const safePool =
+    resolvedPool.length > 0 ? resolvedPool : LETTERS_DATA.slice(0, 4);
+  const questions: QuizQuestion[] = [];
+  for (let i = 0; i < count; i++) {
+    const letter = safePool[i % safePool.length];
+    const q = buildSingleTypedQuestion(letter, 'vowel_read', i, safePool, 3);
+    questions.push({
+      ...q,
+      id: `vq_${letter.id}_${q.vowelQuizKind}_${i}`
+    });
+  }
+  return questions;
+}
+
+/**
+ * Phase 5.3: Placement test generator for a specific family (F1..F7):
+ * 3 questions per family, reusing the existing generators:
+ * 1. hear -> pick the letter (letter_from_sound)
+ * 2. letter -> pick the name (sound_from_letter)
+ * 3. how many dots (dot_placement)
+ */
+export function buildPlacementQuestionsForFamily(
+  familyId: FamilyId,
+  allLetters: LetterRecord[] = LETTERS_DATA
+): QuizQuestion[] {
+  const famLetters = allLetters.filter((l) => l.family === familyId);
+  const pool = famLetters.length >= 3 ? famLetters : allLetters.slice(0, 4);
+  const l0 = pool[0] || allLetters[0];
+  const l1 = pool[1 % pool.length] || allLetters[1];
+  const l2 = pool[2 % pool.length] || allLetters[2];
+
+  return [
+    {
+      ...buildSingleTypedQuestion(l0, 'letter_from_sound', 0, allLetters, 4),
+      familyId
+    },
+    {
+      ...buildSingleTypedQuestion(l1, 'sound_from_letter', 1, allLetters, 4),
+      familyId
+    },
+    {
+      ...buildSingleTypedQuestion(l2, 'dot_placement', 2, allLetters, 4),
+      familyId
+    }
+  ];
 }
 
 /**

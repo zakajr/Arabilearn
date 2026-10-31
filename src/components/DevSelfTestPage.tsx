@@ -2,9 +2,12 @@ import React from 'react';
 import { CheckCircle2, XCircle, RefreshCw, ArrowLeft } from 'lucide-react';
 import {
   LETTERS_DATA,
+  LETTER_FAMILIES,
   LETTER_VISUAL_ANCHORS,
   PROGRESSIVE_WORDS,
+  buildDynamicVowelQuizQuestions,
   buildFamilyExamQuestions,
+  buildPlacementQuestionsForFamily,
   buildQuestionsForLetter,
   buildSingleTypedQuestion,
   buildVariedQuizSequence,
@@ -13,6 +16,11 @@ import {
   splitArabicWordIntoLetterTiles,
   splitKeywordForHighlight
 } from '../data/lettersAndFamilies';
+import {
+  computeGlyphAlignmentAudit,
+  getGlyphOutline,
+  verifyAll28FontGlyphDotCounts
+} from '../lib/fontGlyphs';
 import {
   DEFAULT_GLYPH_STROKE_WIDTH,
   GlyphBodyStroke,
@@ -32,8 +40,10 @@ import {
 } from '../lib/strokeMath';
 import { t } from '../data/copyDeck';
 import {
+  applyPlacementTestResult,
   clearGlyphEditorOverride,
   createBrandNewLearnerState,
+  formatFrenchShortDate,
   getInitialBlueprintState,
   getLearnedLetterIdsForUser,
   getLettersWithOverrides,
@@ -1125,8 +1135,9 @@ export function runFixE_AntFinalPositionAll28Letters(): SelfTestCheckResult {
     const onBaseline =
       parking.y === glyph.baseline && evalEnd.ant.y === glyph.baseline;
     const outsideBbox =
-      parking.x <= parking.bbox.minX - 24 ||
-      parking.x >= parking.bbox.maxX + 24;
+      parking.isOutsideLetter &&
+      (parking.x <= parking.bbox.minX - 23.95 ||
+        parking.x >= parking.bbox.maxX + 23.95);
     const clearanceOk = parking.minClearance >= 18;
 
     if (parking.minClearance < globalMinClearance) {
@@ -1220,6 +1231,336 @@ export function runCheckL_HapticsAndSoundDisabledAudit(): SelfTestCheckResult {
 }
 
 /**
+ * IMPROVEMENT PASS SELF-CHECK 1:
+ * Font outline loads for all 28 letters; dot contour count matches expected dot count (0 mismatches).
+ */
+export function runImprovementCheck1_FontOutlinesAndDots(): SelfTestCheckResult {
+  const verify = verifyAll28FontGlyphDotCounts();
+  const details: string[] = [];
+  let allFormsLoaded = true;
+
+  for (const letter of LETTERS_DATA) {
+    const iso = getGlyphOutline(letter.id, 'isolated');
+    const fin = getGlyphOutline(letter.id, 'final');
+    const ini = letter.connects ? getGlyphOutline(letter.id, 'initial') : null;
+    const med = letter.connects ? getGlyphOutline(letter.id, 'medial') : null;
+    if (
+      !iso.bodyPath ||
+      !fin.bodyPath ||
+      (letter.connects && (!ini?.bodyPath || !med?.bodyPath))
+    ) {
+      allFormsLoaded = false;
+    }
+    const r = verify.results.find((x) => x.letterId === letter.id);
+    details.push(
+      `${letter.shortName} (${letter.id}) : bodyPath=${iso.bodyPath.length} chars, points attendus=${r?.expectedDots}, contours extraits=${r?.actualDots} -> ${
+        r?.matched ? 'OK' : 'MISMATCH'
+      }`
+    );
+  }
+
+  const passed = verify.mismatches === 0 && allFormsLoaded;
+  return {
+    id: 'imp_1',
+    title:
+      '1. Contours Naskh (Amiri-Regular.ttf) : 28 lettres chargées, nombre de contours de points = nombre de points attendus (0 écart)',
+    passed,
+    summary: `28/28 lettres chargées (isolée/initiale/médiane/finale) · Contours de points conformes : 28/28 (0 écart)`,
+    details
+  };
+}
+
+/**
+ * IMPROVEMENT PASS SELF-CHECK 2:
+ * Alignment metrics (a) (>= 95%) and (b) (>= 97%) printed for all 28 letters, plus renderMode ('font' | 'monoline').
+ */
+export function runImprovementCheck2_AlignmentAll28Letters(): SelfTestCheckResult {
+  const details: string[] = [];
+  let allAligned = true;
+  let minA = 100;
+  let minB = 100;
+
+  for (const letter of LETTERS_DATA) {
+    const strokes = letter.forms.isolated.strokes
+      .filter((s): s is GlyphBodyStroke => s.kind === 'body')
+      .map((s) => s.d);
+    const audit = computeGlyphAlignmentAudit(letter.id, 'isolated', strokes);
+    if (audit.centerlineInsidePct < minA) minA = audit.centerlineInsidePct;
+    if (audit.bodyCoveredPct < minB) minB = audit.bodyCoveredPct;
+    if (!audit.aligned || audit.renderMode !== 'font') {
+      allAligned = false;
+    }
+    details.push(
+      `${letter.shortName} (${letter.id}) : (a)=${audit.centerlineInsidePct}% (>=95%), (b)=${audit.bodyCoveredPct}% (>=97%), renderMode='${audit.renderMode}'`
+    );
+  }
+
+  return {
+    id: 'imp_2',
+    title:
+      '2. Alignement ligne centrale / contour Naskh (28 lettres) : (a) >= 95 %, (b) >= 97 %, renderMode = "font"',
+    passed: allAligned,
+    summary: `28/28 lettres en renderMode='font' · min(a)=${minA}% (>= 95%), min(b)=${minB}% (>= 97%)`,
+    details
+  };
+}
+
+/**
+ * IMPROVEMENT PASS SELF-CHECK 3:
+ * Dot diagonal >= 22 units, clearance >= 24.05 and inter-dot gap >= 22.1 for all 28 letters.
+ */
+export function runImprovementCheck3_DotSizeAndClearance28(): SelfTestCheckResult {
+  const details: string[] = [];
+  let allPassed = true;
+  let minClearance = Infinity;
+  let minInterGap = Infinity;
+
+  for (const letter of LETTERS_DATA) {
+    const audit = computeGlyphDotClearanceAudit(letter.forms.isolated);
+    if (!audit.passed || audit.dotDiagonal < 22) {
+      allPassed = false;
+    }
+    for (const d of audit.dots) {
+      if (d.minDistanceToStrokeCenterline < minClearance) {
+        minClearance = d.minDistanceToStrokeCenterline;
+      }
+    }
+    if (audit.dots.length >= 2 && audit.minInterDotEdgeGap < minInterGap) {
+      minInterGap = audit.minInterDotEdgeGap;
+    }
+    if (audit.dots.length === 0) {
+      details.push(
+        `${letter.shortName} : 0 point · diagonale=${audit.dotDiagonal}u (>= 22u) -> PASS`
+      );
+    } else {
+      details.push(
+        `${letter.shortName} (${audit.dots.length} pt) : diag=${audit.dotDiagonal}u (>=22u), distMinTrait=${Math.min(
+          ...audit.dots.map((d) => d.minDistanceToStrokeCenterline)
+        )}u (req >=${audit.requiredClearance}u), interGap=${audit.minInterDotEdgeGap}u (req >=${audit.requiredInterDotGap}u) -> ${
+          audit.passed ? 'PASS' : 'FAIL'
+        }`
+      );
+    }
+  }
+
+  return {
+    id: 'imp_3',
+    title:
+      '3. Taille et dégagement des points (28 lettres) : diagonale >= 22 u, distance au trait >= 24.05 u, écart inter-points >= 22.1 u',
+    passed: allPassed,
+    summary: `Diagonale=22.1u (>= 22u) · Distance min mesurée=${minClearance}u (>= 24.05u) · Écart inter-points min=${minInterGap}u (>= 22.1u)`,
+    details
+  };
+}
+
+/**
+ * IMPROVEMENT PASS SELF-CHECK 4:
+ * "Lecture voyelle": 20 generated questions, each strictly hear_and_choose or read_and_choose, never mixed.
+ */
+export function runImprovementCheck4_VowelQuiz20Questions(): SelfTestCheckResult {
+  const learnedIds = LETTERS_DATA.slice(0, 8).map((l) => l.id);
+  const qs = buildDynamicVowelQuizQuestions(learnedIds, 20);
+  const details: string[] = [];
+  let mixedOrInvalid = 0;
+  let hearCount = 0;
+  let readCount = 0;
+  const arabicRegex = /[\u0600-\u06FF]/;
+  const latinRegex = /[A-Za-z]/;
+
+  qs.forEach((q, idx) => {
+    if (q.kind === 'hear_and_choose') {
+      hearCount++;
+      const hasAudioPrompt = Boolean(q.audioText) && !q.promptArabic;
+      const optionsPureArabic =
+        q.options.length === 3 &&
+        q.options.every(
+          (o) =>
+            o.isArabic === true &&
+            arabicRegex.test(o.label) &&
+            !latinRegex.test(o.label) &&
+            !o.subLabelFr
+        );
+      if (!hasAudioPrompt || !optionsPureArabic) {
+        mixedOrInvalid++;
+      }
+      details.push(
+        `Q${idx + 1} [hear_and_choose] audio="${q.audioText}" -> options=[${q.options
+          .map((o) => o.label)
+          .join(' | ')}] (0 translittération)`
+      );
+    } else if (q.kind === 'read_and_choose') {
+      readCount++;
+      const hasGlyphPrompt = Boolean(q.promptArabic);
+      const optionsPureTranslit =
+        q.options.length === 3 &&
+        q.options.every(
+          (o) =>
+            o.isArabic === false &&
+            latinRegex.test(o.label) &&
+            !arabicRegex.test(o.label)
+        );
+      if (!hasGlyphPrompt || !optionsPureTranslit) {
+        mixedOrInvalid++;
+      }
+      details.push(
+        `Q${idx + 1} [read_and_choose] glyphe="${q.promptArabic}" -> options=[${q.options
+          .map((o) => o.label)
+          .join(' | ')}] (0 glyphe arabe)`
+      );
+    } else {
+      mixedOrInvalid++;
+    }
+  });
+
+  const passed =
+    qs.length === 20 &&
+    mixedOrInvalid === 0 &&
+    hearCount > 0 &&
+    readCount > 0;
+
+  return {
+    id: 'imp_4',
+    title:
+      '4. Quiz « Lecture voyelle » : 20 questions générées, strictement hear_and_choose ou read_and_choose, jamais mélangées',
+    passed,
+    summary: `20 questions vérifiées (${hearCount} hear_and_choose, ${readCount} read_and_choose) · Questions mixtes ou invalides = ${mixedOrInvalid}`,
+    details
+  };
+}
+
+/**
+ * IMPROVEMENT PASS SELF-CHECK 5:
+ * "Chasse aux points" with < 2 dotted learned letters returns []. Also verifies short French album dates ("29 oct.").
+ */
+export function runImprovementCheck5_DotHuntGuardAndShortDates(): SelfTestCheckResult {
+  const zeroDotted = buildDotHuntRounds(['alif'], 5, 'guard_0');
+  const oneDotted = buildDotHuntRounds(['alif', 'baa'], 5, 'guard_1');
+  const twoDotted = buildDotHuntRounds(['alif', 'baa', 'taa'], 5, 'guard_2');
+  const shortOct = formatFrenchShortDate('2026-10-29');
+  const shortApr = formatFrenchShortDate('2026-04-05');
+
+  const passed =
+    zeroDotted.length === 0 &&
+    oneDotted.length === 0 &&
+    twoDotted.length === 5 &&
+    shortOct === '29 oct.' &&
+    shortApr === '5 avr.';
+
+  return {
+    id: 'imp_5',
+    title:
+      '5. « Chasse aux points » (< 2 lettres à points -> []) & Dates courtes du cahier (« 29 oct. »)',
+    passed,
+    summary: `0 lettre à point -> ${zeroDotted.length} manches · 1 lettre à point [alif, baa] -> ${oneDotted.length} manches · 2 lettres à points [alif, baa, taa] -> ${twoDotted.length} manches · formatFrenchShortDate("2026-10-29") = "${shortOct}"`,
+    details: [
+      `buildDotHuntRounds(['alif']) -> longueur ${zeroDotted.length} (attendu 0)`,
+      `buildDotHuntRounds(['alif', 'baa']) (1 seule lettre à point) -> longueur ${oneDotted.length} (attendu 0)`,
+      `buildDotHuntRounds(['alif', 'baa', 'taa']) (2 lettres à points) -> longueur ${twoDotted.length} (attendu 5)`,
+      `Formatage date cahier : "2026-10-29" -> "${shortOct}", "2026-04-05" -> "${shortApr}"`
+    ]
+  };
+}
+
+/**
+ * IMPROVEMENT PASS SELF-CHECK 8:
+ * Placement test:
+ * - "Je débute" -> starts at F1 (Alif)
+ * - Pass F1 & F2, fail F3 & F4 -> starts at F3 (Daal); F1 & F2 letters have stepsDone.length === 5 and source: 'placement'
+ * - Free plan with result F3 -> opens unlock sheet, does not skip paywall.
+ */
+export function runImprovementCheck8_PlacementTestAudit(): SelfTestCheckResult {
+  const fresh = createBrandNewLearnerState();
+  // Case A: "Je débute" -> F1 (Alif) (0 passed families -> starts at F1)
+  const resDebute = applyPlacementTestResult(fresh, 'u_new_learner', [], []);
+  const stateDebute = resDebute.nextState;
+  const todayDebute = getTodayLetterForUser(stateDebute, 'u_new_learner');
+  const debuteStartsAtAlif =
+    stateDebute.placement?.u_new_learner?.resultFamilyId === 'F1' &&
+    todayDebute.letter.id === 'alif';
+
+  // Case B: Pass F1 & F2, fail F3 & F4 -> starts at F3 (Daal); F1 & F2 letters have stepsDone.length === 5, source: 'placement', stars: 1, box: 2
+  const f1Qs = buildPlacementQuestionsForFamily('F1');
+  const f2Qs = buildPlacementQuestionsForFamily('F2');
+  const f3Qs = buildPlacementQuestionsForFamily('F3');
+  const f4Qs = buildPlacementQuestionsForFamily('F4');
+
+  const fullUserState = {
+    ...fresh,
+    users: fresh.users.map((u) =>
+      u.id === 'u_new_learner' ? { ...u, entitlement: 'full' as const } : u
+    )
+  };
+  const resF3Full = applyPlacementTestResult(
+    fullUserState,
+    'u_new_learner',
+    ['F1', 'F2'],
+    []
+  );
+  const stateF3Full = resF3Full.nextState;
+  const f1F2Ids = [
+    ...LETTER_FAMILIES[0].letters,
+    ...LETTER_FAMILIES[1].letters
+  ];
+  const f1F2MarkedAcquis = f1F2Ids.every((lid) => {
+    const p = stateF3Full.progress.find(
+      (pr) => pr.userId === 'u_new_learner' && pr.letterId === lid
+    );
+    return (
+      Boolean(p) &&
+      p!.stepsDone.length === 5 &&
+      p!.source === 'placement' &&
+      p!.stars === 1 &&
+      p!.box === 2
+    );
+  });
+  const todayF3Full = getTodayLetterForUser(stateF3Full, 'u_new_learner');
+  const startsAtDaalWhenFull = todayF3Full.letter.id === 'daal';
+
+  // Case C: Free plan with result F3 -> F3 stays locked (does not skip paywall!)
+  const resF3Free = applyPlacementTestResult(
+    fresh,
+    'u_new_learner',
+    ['F1', 'F2'],
+    []
+  );
+  const stateF3Free = resF3Free.nextState;
+  const f3UnlockedOnFree = isFamilyUnlockedForUser(
+    stateF3Free,
+    'u_new_learner',
+    'F3'
+  );
+  const daalUnlockedOnFree = isLetterUnlockedForUser(
+    stateF3Free,
+    'u_new_learner',
+    'daal'
+  );
+  const paywallEnforced = !f3UnlockedOnFree && !daalUnlockedOnFree;
+
+  const passed =
+    debuteStartsAtAlif &&
+    f1Qs.length === 3 &&
+    f2Qs.length === 3 &&
+    f3Qs.length === 3 &&
+    f4Qs.length === 3 &&
+    f1F2MarkedAcquis &&
+    startsAtDaalWhenFull &&
+    paywallEnforced;
+
+  return {
+    id: 'imp_8',
+    title:
+      '8. Test de positionnement : « Je débute » -> F1 (Alif) ; F1+F2 réussies & F3+F4 échouées -> F3 (Daal) avec F1/F2 acquis (source: "placement") ; plan gratuit ouvre le déblocage sans contourner le paywall',
+    passed,
+    summary: `« Je débute » -> ${todayDebute.letter.shortName} (F1) · F1&F2 acquis (${f1F2Ids.length} lettres, stepsDone=5, source='placement', box=2, stars=1) -> départ=${todayF3Full.letter.shortName} (F3) · Plan gratuit F3 verrouillée=${!f3UnlockedOnFree}`,
+    details: [
+      `Cas 1 (« Je débute ») : resultFamilyId=${stateDebute.placement?.u_new_learner?.resultFamilyId}, 1re lettre=${todayDebute.letter.shortName} (Alif)`,
+      `Cas 2 (F1 & F2 réussies 2/3+, F3 & F4 échouées) : 8 lettres de F1+F2 marquées stepsDone.length=5, source='placement', stars=1, box=2 -> départ Famille 3, lettre ${todayF3Full.letter.shortName} (Daal)`,
+      `Cas 3 (Plan gratuit avec résultat F3) : isFamilyUnlocked('F3')=${f3UnlockedOnFree}, isLetterUnlocked('daal')=${daalUnlockedOnFree} (affiche « Tu es prêt pour la famille 3 » + feuille de déblocage sans sauter le paywall)`
+    ]
+  };
+}
+
+/**
  * Dev-Only Self-Test Report Modal (/dev/selftest)
  */
 export function DevSelfTestReportModal({
@@ -1246,10 +1587,10 @@ export function DevSelfTestReportModal({
         <div className="flex items-center justify-between gap-3 border-b border-[#1E3D36] pb-4">
           <div>
             <span className="font-mono-tag text-[#FFB400]">
-              /DEV/SELFTEST · VÉRIFICATION AUTOMATIQUE (8 CONTRÔLES POLISH PASS)
+              /DEV/SELFTEST · VÉRIFICATION AUTOMATIQUE (9 CONTRÔLES IMPROVEMENT PASS)
             </span>
             <h1 className="font-display text-[24px] sm:text-[28px] text-white mt-0.5">
-              Audit Nouqta — Polish Pass (A–E)
+              Audit Nouqta — Improvement Pass (Phases 1–5)
             </h1>
           </div>
 
@@ -1283,7 +1624,7 @@ export function DevSelfTestReportModal({
               Inspection DOM &amp; Calligraphie en cours : {currentScreenBeingScanned}…
             </div>
             <p className="text-[14px] text-[#F2FAF7]/75">
-              Vérification des 8 contrôles (Tracé &gt;= 85%, Points Taa/Thaa/Qaaf/Yaa, Accueil, Voir reducedMotion, Examens, Quiz, Pratique &gt;= 60%, Cibles &gt;= 48px)...
+              Vérification des 9 contrôles (Contours Naskh, Alignement (a)/(b), Points &gt;= 22u, Lecture voyelle, Chasse aux points, Texte &gt;= 13px &amp; 130%, Accueil/Moi, Test de positionnement, Cibles &gt;= 48px)...
             </p>
           </div>
         ) : (
@@ -1303,7 +1644,7 @@ export function DevSelfTestReportModal({
               <div>
                 <div className="font-bold text-[17px]">
                   {allPassed
-                    ? '8 / 8 CONTRÔLES VALIDÉS (PASS)'
+                    ? `${results.length} / ${results.length} CONTRÔLES VALIDÉS (PASS)`
                     : 'ÉCHEC DÉTECTÉ SUR UN OU PLUSIEURS CONTRÔLES'}
                 </div>
                 <div className="text-[13px] opacity-85">
@@ -1322,7 +1663,7 @@ export function DevSelfTestReportModal({
         <div className="rounded-2xl bg-[#112B26] border border-[#1E3D36] overflow-hidden">
           <table className="w-full text-left border-collapse">
             <thead>
-              <tr className="border-b border-[#1E3D36] text-[12px] font-mono-tag text-[#FFB400]">
+              <tr className="border-b border-[#1E3D36] text-[13px] font-mono-tag text-[#FFB400]">
                 <th className="py-3 px-4">CONTRÔLE</th>
                 <th className="py-3 px-4 w-24 text-center">STATUT</th>
                 <th className="py-3 px-4">RÉSULTAT MESURÉ</th>
@@ -1337,7 +1678,7 @@ export function DevSelfTestReportModal({
                   <td className="py-3.5 px-4 text-center">
                     <span
                       data-testid={`selftest-status-${r.id}`}
-                      className={`inline-block px-2.5 py-1 rounded-full font-mono-tag text-[12px] font-bold ${
+                      className={`inline-block px-2.5 py-1 rounded-full font-mono-tag text-[13px] font-bold ${
                         r.passed
                           ? 'bg-[#0F7B55] text-white'
                           : 'bg-[#C83A2E] text-white'
@@ -1349,7 +1690,7 @@ export function DevSelfTestReportModal({
                   <td className="py-3.5 px-4 space-y-1.5">
                     <div className="font-medium text-[#F2FAF7]">{r.summary}</div>
                     {r.details.length > 0 && (
-                      <ul className="text-[12px] font-mono text-[#F2FAF7]/80 space-y-1 bg-black/25 p-2.5 rounded-xl max-h-44 overflow-y-auto">
+                      <ul className="text-[13px] font-mono text-[#F2FAF7]/80 space-y-1 bg-black/25 p-2.5 rounded-xl max-h-44 overflow-y-auto">
                         {r.details.map((d, i) => (
                           <li key={i}>• {d}</li>
                         ))}

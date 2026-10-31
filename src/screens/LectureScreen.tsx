@@ -124,7 +124,7 @@ export function LectureScreen({ app }: { app: NouqtaAppController }) {
                             {word.translationFr}
                           </span>
                           {userSetting.transliteration && (
-                            <span className="text-[12px] text-[var(--ink)]/70">
+                            <span className="text-[13px] text-[var(--ink)]/70">
                               {word.translit}
                             </span>
                           )}

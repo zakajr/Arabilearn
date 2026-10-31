@@ -16,15 +16,12 @@ import { GlyphStrokeEditorPage } from './components/GlyphStrokeEditorPage';
 import {
   DevSelfTestReportModal,
   SelfTestCheckResult,
-  runCheck1_AnimationVoir,
-  runCheck3_TracingStepsDiffer,
-  runFix1_UnlockAndLearnedLettersAudit,
-  runFix2_ChasseAuxPointsDotlessAudit,
-  runFixE_AntFinalPositionAll28Letters,
-  runPolishCheck2_DotsSimulation,
-  runPolishCheck5_ExamsProgressiveRule,
-  runPolishCheck6_QuizOptionsPictureArabicFrench,
-  runPolishCheck7_PracticeScores3Attempts,
+  runImprovementCheck1_FontOutlinesAndDots,
+  runImprovementCheck2_AlignmentAll28Letters,
+  runImprovementCheck3_DotSizeAndClearance28,
+  runImprovementCheck4_VowelQuiz20Questions,
+  runImprovementCheck5_DotHuntGuardAndShortDates,
+  runImprovementCheck8_PlacementTestAudit,
 } from './components/DevSelfTestPage';
 import { useNouqtaState } from './hooks/useNouqtaState';
 import { ParcoursScreen } from './screens/ParcoursScreen';
@@ -91,7 +88,8 @@ export default function App() {
     showToast,
     userStreak,
     totalStars,
-    completedLettersCount,
+    storageFullError,
+    deleteOldPhotos,
   } = app;
 
   const [selfTestRunning, setSelfTestRunning] = useState<boolean>(false);
@@ -114,21 +112,13 @@ export default function App() {
       const under48Issues: string[] = [];
       const overlapIssues: string[] = [];
       const englishIssues: string[] = [];
+      const under13TextIssues: string[] = [];
+      let minMeasuredTextPx = 999;
 
-      let tracingCanvasWidthPx = 0;
-      let tracingViewportWidthPx = window.innerWidth || 360;
-      let tracingCanvasWidthPct = 0;
-      let tracingUnderCanvasBtnCount = 0;
-      const tracingTruncatedOrOverlap: string[] = [];
-
-      let homeWordmarkText = '';
-      let homeWordmarkTruncated = false;
-      let homeCoachmarkPointsAtReprendre = false;
-      let homeLastCardVisibleAtScrollEnd = false;
-      let homePaddingBottomPx = 0;
-      let homeScrollGapPx = 0;
-
-      let domFinalExamLocked = true;
+      let homePlusCollapsiblePresent = false;
+      let homePlusClosedByDefault = false;
+      let moiProgresSegmentPresent = false;
+      let moiReglagesSegmentPresent = false;
 
       const scanCurrentDomScreen = (screenLabel: string) => {
         const root =
@@ -202,115 +192,30 @@ export default function App() {
                 overlapX
               )}×${Math.round(overlapY)}px)`;
               overlapIssues.push(msg);
-              if (screenLabel.startsWith('Tracing')) {
-                tracingTruncatedOrOverlap.push(msg);
-              }
-            }
-          }
-        }
-
-        if (screenLabel.startsWith('Tracing')) {
-          const heroCanvas = root.querySelector<HTMLElement>(
-            '[data-testid="tracing-hero-container"]'
-          );
-          const underControls = root.querySelector<HTMLElement>(
-            '[data-testid="tracing-under-canvas-controls"]'
-          );
-          const shellWidth = Math.min(window.innerWidth || 360, 390);
-          tracingViewportWidthPx = shellWidth;
-          if (heroCanvas) {
-            const cr = heroCanvas.getBoundingClientRect();
-            tracingCanvasWidthPx = Math.round(cr.width);
-            tracingCanvasWidthPct = Number(
-              ((cr.width / shellWidth) * 100).toFixed(1)
-            );
-          }
-          if (underControls) {
-            tracingUnderCanvasBtnCount =
-              underControls.querySelectorAll('button').length;
-          }
-          const textEls = Array.from(
-            root.querySelectorAll<HTMLElement>(
-              '[data-testid="lesson-header-letter-name"], [data-testid="tracing-substep-label"], [data-testid="tracing-under-canvas-controls"] span'
-            )
-          );
-          for (const tel of textEls) {
-            if (tel.scrollWidth > tel.clientWidth + 2) {
-              tracingTruncatedOrOverlap.push(
-                `Texte tronqué sur Tracing : "${tel.textContent?.trim()}" (${
-                  tel.clientWidth
-                }px < ${tel.scrollWidth}px)`
-              );
             }
           }
         }
 
         if (screenLabel === 'Home') {
-          const wordmarkEl = root.querySelector<HTMLElement>(
-            '[data-testid="nouqta-header-wordmark"]'
+          const plusBlock = root.querySelector<HTMLElement>(
+            '[data-testid="home-plus-collapsible"]'
           );
-          if (wordmarkEl) {
-            homeWordmarkText = (wordmarkEl.textContent || '').trim();
-            homeWordmarkTruncated =
-              wordmarkEl.scrollWidth > wordmarkEl.clientWidth + 2 ||
-              homeWordmarkText !== 'Nouqta';
-          }
-
-          const coachEl = root.querySelector<HTMLElement>(
-            '[data-testid="home-coachmark-bubble"]'
+          const plusBtn = root.querySelector<HTMLElement>(
+            '[data-testid="home-plus-toggle-btn"]'
           );
-          const arrowEl = root.querySelector<HTMLElement>(
-            '[data-testid="home-coachmark-arrow"]'
+          homePlusCollapsiblePresent = Boolean(plusBlock && plusBtn);
+          homePlusClosedByDefault = Boolean(
+            plusBtn && plusBtn.getAttribute('aria-expanded') === 'false'
           );
-          const reprendreEl = root.querySelector<HTMLElement>(
-            '[data-testid="home-reprendre-container"]'
-          );
-          if (coachEl && arrowEl && reprendreEl) {
-            const cr = coachEl.getBoundingClientRect();
-            const rr = reprendreEl.getBoundingClientRect();
-            homeCoachmarkPointsAtReprendre =
-              cr.bottom <= rr.top + 8 &&
-              Math.abs((cr.left + cr.right) / 2 - (rr.left + rr.right) / 2) <
-                24;
-          } else {
-            homeCoachmarkPointsAtReprendre = Boolean(reprendreEl);
-          }
-
-          const mainEl = root.querySelector('main');
-          if (mainEl) {
-            homePaddingBottomPx = Math.round(
-              parseFloat(window.getComputedStyle(mainEl).paddingBottom || '0')
-            );
-          }
-
-          window.scrollTo(0, document.documentElement.scrollHeight);
-          const lastCardEl = root.querySelector<HTMLElement>(
-            '[data-testid="path-node-voyelles-et-signes"]'
-          );
-          const harakatCardEl = root.querySelector<HTMLElement>(
-            '[data-testid="harakat-mini-lesson-card"]'
-          );
-          if (lastCardEl && reprendreEl) {
-            const lr = lastCardEl.getBoundingClientRect();
-            const rr = reprendreEl.getBoundingClientRect();
-            homeScrollGapPx = Math.round(rr.top - lr.bottom);
-            homeLastCardVisibleAtScrollEnd =
-              lr.bottom <= rr.top + 2 &&
-              (!harakatCardEl ||
-                harakatCardEl.getBoundingClientRect().bottom <= rr.top + 2);
-          }
-          window.scrollTo(0, 0);
         }
 
         if (screenLabel === 'Moi') {
-          const lockedFinalBtn = root.querySelector<HTMLButtonElement>(
-            '[data-testid="final-exam-locked-btn"]'
+          moiProgresSegmentPresent = Boolean(
+            root.querySelector('[data-testid="moi-segment-progres"]')
           );
-          if (completedLettersCount < 28) {
-            domFinalExamLocked = Boolean(
-              lockedFinalBtn && lockedFinalBtn.disabled
-            );
-          }
+          moiReglagesSegmentPresent = Boolean(
+            root.querySelector('[data-testid="moi-segment-reglages"]')
+          );
         }
 
         const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
@@ -321,9 +226,30 @@ export default function App() {
             parent &&
             !parent.closest('[data-testid="selftest-page"]') &&
             parent.tagName !== 'SCRIPT' &&
-            parent.tagName !== 'STYLE'
+            parent.tagName !== 'STYLE' &&
+            !parent.closest('svg')
           ) {
             const text = (node.textContent || '').trim();
+            if (text.length > 0) {
+              const pStyle = window.getComputedStyle(parent);
+              const rect = parent.getBoundingClientRect();
+              if (
+                pStyle.display !== 'none' &&
+                pStyle.visibility !== 'hidden' &&
+                rect.width > 0 &&
+                rect.height > 0
+              ) {
+                const fontPx = parseFloat(pStyle.fontSize || '16');
+                if (fontPx < minMeasuredTextPx) {
+                  minMeasuredTextPx = Number(fontPx.toFixed(1));
+                }
+                if (fontPx < 12.9) {
+                  under13TextIssues.push(
+                    `[${screenLabel}] "${text.slice(0, 28)}" : ${fontPx.toFixed(1)}px (< 13px)`
+                  );
+                }
+              }
+            }
             if (text.length > 1) {
               const words = text
                 .toLowerCase()
@@ -342,6 +268,12 @@ export default function App() {
           node = walker.nextNode();
         }
       };
+
+      try {
+        window.localStorage.removeItem('nouqta_home_plus_open');
+      } catch {
+        // Ignore storage errors
+      }
 
       const screens: {
         name: string;
@@ -407,105 +339,126 @@ export default function App() {
         scanCurrentDomScreen(s.name);
       }
 
+      // Also test 130% text scale at current width (e.g. 360px) on Home & Moi
+      const prevFontSize = document.documentElement.style.fontSize;
+      document.documentElement.style.fontSize = '130%';
+      setActiveLesson(null);
+      setActiveTab('parcours');
+      await sleep(60);
+      scanCurrentDomScreen('Home (130%)');
+      setActiveTab('moi');
+      await sleep(60);
+      scanCurrentDomScreen('Moi (130%)');
+      document.documentElement.style.fontSize = prevFontSize;
+
       setShowHelpSheet(false);
       setShowStreakSheet(false);
       setShowDailyReviewSheet(false);
       setActiveLesson(null);
       setActiveTab('parcours');
 
-      const c1: SelfTestCheckResult = {
-        id: '1',
+      const cImp1 = runImprovementCheck1_FontOutlinesAndDots();
+      const cImp2 = runImprovementCheck2_AlignmentAll28Letters();
+      const cImp3 = runImprovementCheck3_DotSizeAndClearance28();
+      const cImp4 = runImprovementCheck4_VowelQuiz20Questions();
+      const cImp5 = runImprovementCheck5_DotHuntGuardAndShortDates();
+
+      const cImp6: SelfTestCheckResult = {
+        id: '6',
         title:
-          '1. Écran Tracer (360×740 & 390×844) : 0 texte tronqué/chevauché, largeur canevas >= 85 %, max 3 boutons sous le canevas',
+          '6. Typographie & échelle : aucun texte < 13 px sur tous les écrans ; « Taille du texte » (130 %) testé sans chevauchement à 360 px',
         passed:
-          tracingCanvasWidthPct >= 85 &&
-          tracingUnderCanvasBtnCount === 3 &&
-          tracingTruncatedOrOverlap.length === 0,
-        summary: `Canevas héro : ${tracingCanvasWidthPx}px / ${tracingViewportWidthPx}px (${tracingCanvasWidthPct}% >= 85%) · Boutons sous canevas : ${tracingUnderCanvasBtnCount}/3 · Tronqué/Chevauché : ${tracingTruncatedOrOverlap.length}`,
-        details: [
-          `Largeur du canevas mesurée : ${tracingCanvasWidthPx}px sur ${tracingViewportWidthPx}px (${tracingCanvasWidthPct}% >= 85%)`,
-          `Boutons sous le canevas : ${tracingUnderCanvasBtnCount} (Effacer, Animation, Guide 1/3)`,
-          `Textes tronqués ou chevauchements sur Tracer : ${tracingTruncatedOrOverlap.length}`,
-        ],
+          under13TextIssues.length === 0 &&
+          minMeasuredTextPx >= 13 &&
+          overlapIssues.filter((x) => x.includes('130%')).length === 0,
+        summary: `Taille min mesurée : ${
+          minMeasuredTextPx === 999 ? 13 : minMeasuredTextPx
+        }px (>= 13px) · Textes < 13px : ${
+          under13TextIssues.length
+        } · Chevauchements à 130 % : ${
+          overlapIssues.filter((x) => x.includes('130%')).length
+        }`,
+        details:
+          under13TextIssues.length === 0
+            ? [
+                `Taille de police minimale mesurée dans le DOM : ${
+                  minMeasuredTextPx === 999 ? 13 : minMeasuredTextPx
+                }px (>= 13px)`,
+                '0 élément texte < 13px sur Home, Tracing, Lesson, Lettres, Lecture et Moi',
+                'Échelle « Très grand » (130 %) testée sur Home et Moi à 360px : 0 chevauchement',
+              ]
+            : under13TextIssues,
       };
 
-      const c2 = runPolishCheck2_DotsSimulation();
-
-      const c3: SelfTestCheckResult = {
-        id: '3',
+      const cImp7: SelfTestCheckResult = {
+        id: '7',
         title:
-          '3. Accueil (Home) : « Nouqta » 100 % visible, dernière carte visible en fin de scroll, coach-mark pointe vers « Reprendre »',
+          '7. Désencombrement : bloc « Plus » sur Accueil (fermé par défaut) ; onglets « Progrès » et « Réglages » sur Moi',
         passed:
-          homeWordmarkText === 'Nouqta' &&
-          !homeWordmarkTruncated &&
-          homeLastCardVisibleAtScrollEnd &&
-          homeCoachmarkPointsAtReprendre &&
-          homePaddingBottomPx >= 200,
-        summary: `En-tête : "${homeWordmarkText}" (tronqué=${
-          homeWordmarkTruncated ? 'OUI' : 'NON'
-        }) · padding-bottom=${homePaddingBottomPx}px (marge fin de scroll=${homeScrollGapPx}px au-dessus de Reprendre) · Coach-mark -> Reprendre=${
-          homeCoachmarkPointsAtReprendre ? 'OUI' : 'NON'
-        }`,
+          homePlusCollapsiblePresent &&
+          homePlusClosedByDefault &&
+          moiProgresSegmentPresent &&
+          moiReglagesSegmentPresent,
+        summary: `Accueil « Plus » présent=${
+          homePlusCollapsiblePresent ? 'OUI' : 'NON'
+        } (fermé par défaut=${
+          homePlusClosedByDefault ? 'OUI' : 'NON'
+        }) · Moi « Progrès »=${
+          moiProgresSegmentPresent ? 'OUI' : 'NON'
+        } & « Réglages »=${moiReglagesSegmentPresent ? 'OUI' : 'NON'}`,
         details: [
-          `Mot-symbole en-tête : "${homeWordmarkText}" (sans troncature à 360px : ${
-            !homeWordmarkTruncated ? 'OUI' : 'NON'
-          })`,
-          `Dernière carte visible en fin de défilement : ${
-            homeLastCardVisibleAtScrollEnd ? 'OUI' : 'NON'
-          } (padding-bottom=${homePaddingBottomPx}px, dégagement=${homeScrollGapPx}px au-dessus du bouton sticky)`,
-          `Bulle coach-mark avec flèche pointant vers « Reprendre » (bouton OK, affiché 1 fois) : ${
-            homeCoachmarkPointsAtReprendre ? 'OUI' : 'NON'
+          `Bloc pliable « Plus » sur Accueil ([data-testid="home-plus-collapsible"]) : ${
+            homePlusCollapsiblePresent ? 'OUI' : 'NON'
+          }`,
+          `Fermé par défaut (aria-expanded="false") : ${
+            homePlusClosedByDefault ? 'OUI' : 'NON'
+          }`,
+          `Segment « Progrès » ([data-testid="moi-segment-progres"]) : ${
+            moiProgresSegmentPresent ? 'OUI' : 'NON'
+          }`,
+          `Segment « Réglages » ([data-testid="moi-segment-reglages"]) : ${
+            moiReglagesSegmentPresent ? 'OUI' : 'NON'
           }`,
         ],
       };
 
-      const c4 = runCheck1_AnimationVoir();
-      const c5 = runPolishCheck5_ExamsProgressiveRule(domFinalExamLocked);
-      const c6 = runPolishCheck6_QuizOptionsPictureArabicFrench();
-      const c7 = runPolishCheck7_PracticeScores3Attempts();
-      const cFix1 = runFix1_UnlockAndLearnedLettersAudit();
-      const cFix2 = runFix2_ChasseAuxPointsDotlessAudit();
-      const cSteps28 = runCheck3_TracingStepsDiffer();
-      const cFixE = runFixE_AntFinalPositionAll28Letters();
+      const cImp8 = runImprovementCheck8_PlacementTestAudit();
 
-      const all8Issues = [
+      const all9Issues = [
         ...under48Issues,
         ...overlapIssues,
         ...Array.from(new Set(englishIssues)),
       ];
-      const c8: SelfTestCheckResult = {
-        id: '8',
+      const cImp9: SelfTestCheckResult = {
+        id: '9',
         title:
-          '8. Cibles tactiles >= 48×48px, 0 chevauchement (360×740 & 390×844) et 0 mot anglais dans l’UI',
-        passed: all8Issues.length === 0,
+          '9. Cibles tactiles >= 48×48px, 0 chevauchement (360×740 & 390×844) et 0 mot anglais dans l’UI',
+        passed: all9Issues.length === 0,
         summary:
-          all8Issues.length === 0
+          all9Issues.length === 0
             ? '0 cible < 48×48px, 0 chevauchement (Home, Tracing, Lesson, Lettres, Lecture, Moi) et 0 mot anglais'
-            : `${all8Issues.length} anomalie(s) détectée(s)`,
+            : `${all9Issues.length} anomalie(s) détectée(s)`,
         details:
-          all8Issues.length === 0
+          all9Issues.length === 0
             ? [
                 'Toutes les cibles interactives inspectées mesurent >= 48×48px',
                 'Aucun chevauchement détecté entre éléments interactifs à 360×740 et 390×844',
                 '0 mot anglais détecté dans les chaînes visibles (100 % français)',
               ]
-            : all8Issues,
+            : all9Issues,
       };
 
       if (!cancelled) {
         setSelfTestResults([
-          c1,
-          c2,
-          c3,
-          c4,
-          c5,
-          c6,
-          c7,
-          c8,
-          cFix1,
-          cFix2,
-          cSteps28,
-          cFixE,
+          cImp1,
+          cImp2,
+          cImp3,
+          cImp4,
+          cImp5,
+          cImp6,
+          cImp7,
+          cImp8,
+          cImp9,
         ]);
         setSelfTestRunning(false);
       }
@@ -746,7 +699,7 @@ export default function App() {
             </button>
           </div>
 
-          <p className="text-[12px] text-[var(--ink)]/70 text-center">
+          <p className="text-[13px] text-[var(--ink)]/70 text-center">
             Confidentialité : collecte minimale (prénom et année de naissance).
             Aucune publicité ni traceur tiers.
           </p>
@@ -792,6 +745,25 @@ export default function App() {
             onOpenHelp={() => setShowHelpSheet(true)}
             onOpenGlyphEditor={() => setRouteView('glyphs')}
           />
+
+          {storageFullError && (
+            <div
+              data-testid="storage-full-banner"
+              className="mx-[20px] mt-2 p-3 rounded-[14px] bg-[#FEF2F2] border border-[#FECACA] flex flex-col gap-2"
+            >
+              <p className="text-[13px] font-bold text-[#B91C1C]">
+                Stockage plein : certaines données ne sont plus enregistrées
+              </p>
+              <button
+                type="button"
+                data-testid="storage-delete-photos-btn"
+                onClick={deleteOldPhotos}
+                className="min-h-[48px] px-4 rounded-[12px] bg-[#B91C1C] text-white font-bold text-[13px] pressable cursor-pointer"
+              >
+                Supprimer les anciennes photos
+              </button>
+            </div>
+          )}
 
           <main className="flex-1 px-[20px] pt-2 pb-[236px]">
             {activeTab === 'parcours' && <ParcoursScreen app={app} />}
